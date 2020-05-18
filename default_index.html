@@ -1,0 +1,136 @@
+<!doctypehtml>
+  <html lang=en-us>
+
+  <head>
+    <meta charset=utf-8>
+    <meta content="text/html; charset=utf-8" http-equiv=Content-Type>
+    <title>Emscripten-Generated Code</title>
+    <style>
+      body {
+        font-family: arial;
+        margin: 0;
+        padding: none
+      }
+
+      .emscripten {
+        padding-right: 0;
+        margin-left: auto;
+        margin-right: auto;
+        display: block
+      }
+
+      div.emscripten {
+        text-align: center
+      }
+
+      div.emscripten_border {
+        border: 1px solid #000
+      }
+
+      canvas.emscripten {
+        border: 0 none;
+        background-color: #000
+      }
+
+      #emscripten_logo {
+        display: inline-block;
+        margin: 0
+      }
+
+
+      @-webkit-keyframes rotation {
+        from {
+          -webkit-transform: rotate(0)
+        }
+
+        to {
+          -webkit-transform: rotate(360deg)
+        }
+      }
+
+      @-moz-keyframes rotation {
+        from {
+          -moz-transform: rotate(0)
+        }
+
+        to {
+          -moz-transform: rotate(360deg)
+        }
+      }
+
+      @-o-keyframes rotation {
+        from {
+          -o-transform: rotate(0)
+        }
+
+        to {
+          -o-transform: rotate(360deg)
+        }
+      }
+
+      @keyframes rotation {
+        from {
+          transform: rotate(0)
+        }
+
+        to {
+          transform: rotate(360deg)
+        }
+      }
+
+
+      #controls {
+        display: inline-block;
+        float: right;
+        vertical-align: top;
+        margin-top: 30px;
+        margin-right: 20px
+      }
+      .game {
+          position: absolute;
+          top: 0px;
+          left: 0px;
+          margin: 0px;
+          border: 0;
+          width: 100%;
+          height: 100%;
+          overflow: hidden;
+          display: block;
+      }
+    </style>
+  </head>
+
+  <body>
+    <canvas class=game id=canvas oncontextmenu=event.preventDefault() tabindex=-1></canvas>
+    <script>
+      var Module = {
+        preRun: [],
+        postRun: [],
+        print: function (e) {
+          console.log(e);
+        },
+        printErr: function (e) {
+          console.log(e);
+        },
+        canvas: function () {
+          var e = document.getElementById('canvas');
+          return e.addEventListener('webglcontextlost', function (e) {
+            alert('WebGL contex lost.You will need to reload the page.'),
+              e.preventDefault()
+          }, !1), e
+        }(),
+        setStatus: function (e) { },
+        totalDependencies: 0,
+        monitorRunDependencies: function (e) { }
+      };
+    </script>
+    <script src=index.js></script>
+    <script>
+      //   setInterval(function() {
+      //  var e = document.getElementById('canvas');
+      //  e.width = 1024;
+      //   }, 1000);
+    </script>
+  </body>
+
+  </html>

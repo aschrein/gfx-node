@@ -1,0 +1,5 @@
+commit 3b3af6b73136a03dfcdb84872fc08542900a1aa8
+Author: omar <omarcornut@gmail.com>
+Date:   Sat May 16 16:11:42 2020 +0200
+
+    Docking: Fix extraneous function declaration (#3236) + moved some other declarations in imgui_internal to facilitate moving docking code.
