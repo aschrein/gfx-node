@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "node_editor.h"
+#define UTILS_IMPL
 #include "utils.hpp"
 
 #include <ImGuiColorTextEdit/TextEditor.h>
@@ -40,9 +41,9 @@ void Context2D::imcanvas_start() {
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
   ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-
+  ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
   ImGui::Begin("Canvas");
-
+  ImGui::PopStyleVar(4);
   /*---------------------------------------*/
   /* Update the viewport for the rendering */
   /*---------------------------------------*/
@@ -60,44 +61,67 @@ void Context2D::imcanvas_start() {
   screen_height = SCREEN_HEIGHT;
   screen_width  = SCREEN_WIDTH;
   hovered       = ImGui::IsWindowHovered();
-//  if (ImGui::IsWindowHovered()) {
-//    float mx, my;
-//    auto  mpos = ImGui::GetMousePos();
-//    mx         = 2.0f * (float(mpos.x - viewport_x) + 0.5f) / viewport_width - 1.0f;
-//    my         = -2.0f * (float(mpos.y - viewport_y) - 0.5f) / viewport_height + 1.0f;
-//    auto dx    = mpos.x - old_mpos.x;
-//    auto dy    = mpos.y - old_mpos.y;
 
-//    if (ImGui::GetIO().MouseDown[0]) {
-//      camera.pos.x -= camera.pos.z * (float)dx / viewport_height;
-//      camera.pos.y += camera.pos.z * (float)dy / viewport_height;
-//    }
-//    camera.mouse_screen_x = mx;
-//    camera.mouse_screen_y = my;
+  static int  selected_fish = -1;
+  const char *names[]       = {"Bream", "Haddock", "Mackerel", "Pollock", "Tilefish"};
+  static bool toggles[]     = {true, false, false, false, false};
 
-//    old_mpos      = int2(mpos.x, mpos.y);
-//    auto scroll_y = ImGui::GetIO().MouseWheel;
-//    if (scroll_y) {
-//      float dz = camera.pos.z * (float)(scroll_y > 0 ? 1 : -1) * 2.0e-1;
-//      //    fprintf(stdout, "dz: %i\n", event.wheel.y);
-//      camera.pos.x += -0.5f * dz * (camera.window_to_screen((int2){(int32_t)old_mpos.x, 0}).x);
-//      camera.pos.y += -0.5f * dz * (camera.window_to_screen((int2){0, (int32_t)old_mpos.y}).y);
-//      camera.pos.z += dz;
-//      camera.pos.z = clamp(camera.pos.z, 0.1f, 512.0f);
-//    }
-//  }
+  if (ImGui::BeginPopupContextWindow()) {
+    for (int i = 0; i < IM_ARRAYSIZE(names); i++) ImGui::MenuItem(names[i], "", &toggles[i]);
+    if (ImGui::BeginMenu("Sub-menu")) {
+      ImGui::MenuItem("Click me");
+      ImGui::EndMenu();
+    }
+    if (ImGui::Button("Exit")) std::exit(0);
+    ImGui::Separator();
+    ImGui::Text("Tooltip here");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("I am a tooltip over a popup");
+
+    if (ImGui::Button("Stacked Popup")) ImGui::OpenPopup("another popup");
+    if (ImGui::BeginPopup("another popup")) {
+      for (int i = 0; i < IM_ARRAYSIZE(names); i++) ImGui::MenuItem(names[i], "", &toggles[i]);
+      if (ImGui::BeginMenu("Sub-menu")) {
+        ImGui::MenuItem("Click me");
+        if (ImGui::Button("Stacked Popup")) ImGui::OpenPopup("another popup");
+        if (ImGui::BeginPopup("another popup")) {
+          ImGui::Text("I am the last one here.");
+          ImGui::EndPopup();
+        }
+        ImGui::EndMenu();
+      }
+      ImGui::EndPopup();
+    }
+    ImGui::EndPopup();
+  }
+  //  if (ImGui::IsWindowHovered()) {
+  //    float mx, my;
+  //    auto  mpos = ImGui::GetMousePos();
+  //    mx         = 2.0f * (float(mpos.x - viewport_x) + 0.5f) / viewport_width - 1.0f;
+  //    my         = -2.0f * (float(mpos.y - viewport_y) - 0.5f) / viewport_height + 1.0f;
+  //    auto dx    = mpos.x - old_mpos.x;
+  //    auto dy    = mpos.y - old_mpos.y;
+
+  //    if (ImGui::GetIO().MouseDown[0]) {
+  //      camera.pos.x -= camera.pos.z * (float)dx / viewport_height;
+  //      camera.pos.y += camera.pos.z * (float)dy / viewport_height;
+  //    }
+  //    camera.mouse_screen_x = mx;
+  //    camera.mouse_screen_y = my;
+
+  //    old_mpos      = int2(mpos.x, mpos.y);
+  //    auto scroll_y = ImGui::GetIO().MouseWheel;
+  //    if (scroll_y) {
+  //      float dz = camera.pos.z * (float)(scroll_y > 0 ? 1 : -1) * 2.0e-1;
+  //      //    fprintf(stdout, "dz: %i\n", event.wheel.y);
+  //      camera.pos.x += -0.5f * dz * (camera.window_to_screen((int2){(int32_t)old_mpos.x, 0}).x);
+  //      camera.pos.y += -0.5f * dz * (camera.window_to_screen((int2){0, (int32_t)old_mpos.y}).y);
+  //      camera.pos.z += dz;
+  //      camera.pos.z = clamp(camera.pos.z, 0.1f, 512.0f);
+  //    }
+  //  }
   camera.update(viewport_x, viewport_y, viewport_width, viewport_height);
-  line_storage.enter_scope();
-  quad_storage.enter_scope();
-  string_storage.enter_scope();
-  char_storage.enter_scope();
 }
-void Context2D::imcanvas_end() {
-  ImGui::End();
-  ImGui::PopStyleVar(3);
-}
-
-Scene scene;
+void Context2D::imcanvas_end() { ImGui::End(); }
 
 #if __EMSCRIPTEN__
 void main_tick() {
@@ -111,29 +135,11 @@ int main_tick() {
   i32       old_mp_y     = 0;
   auto      handle_event = [&]() {
     ImGui_ImplSDL2_ProcessEvent(&event);
-    scene.consume_event(event);
+    Scene::get_scene()->consume_event(event);
   };
   static TextEditor editor;
   TextEditor::LanguageDefinition::CPlusPlus();
-  editor.SetText(
-      R"(#version 300 es
-        precision highp float;
-  layout (location = 0) in vec2 vertex_position;
-  layout (location = 1) in vec4 instance_offset;
-  layout (location = 2) in vec3 instance_color;
-  layout (location = 3) in vec2 instance_size;
-
-  out vec3 color;
-  uniform mat4 projection;
-  void main() {
-      color = instance_color;
-      if (instance_offset.w > 0.0)
-        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy, instance_offset.z, 1.0) * projection;
-      else
-        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy, instance_offset.z, 1.0);
-  }
-  )");
-
+  editor.SetPalette(TextEditor::GetRetroBluePalette());
   auto poll_events = [&]() {
 #if __EMSCRIPTEN__
     int fs;
@@ -142,9 +148,10 @@ int main_tick() {
     // SDL_GetWindowSize(window, &SCREEN_WIDTH, &SCREEN_HEIGHT);
 #else
     SDL_GetWindowSize(window, &SCREEN_WIDTH, &SCREEN_HEIGHT);
-#endif
     handle_event();
+#endif
     while (SDL_PollEvent(&event)) {
+
       handle_event();
     }
     ImGui_ImplOpenGL3_NewFrame();
@@ -162,25 +169,35 @@ int main_tick() {
     window_flags |= ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoCollapse |
                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove;
     window_flags |= ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-
     window_flags |= ImGuiWindowFlags_NoBackground;
     ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
     ImGui::SetNextWindowBgAlpha(-1.0f);
     ImGui::Begin("DockSpace", nullptr, window_flags);
-    ImGui::PopStyleVar(3);
+    ImGui::PopStyleVar(4);
     ImGuiID dockspace_id = ImGui::GetID("MyDockSpace");
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
     ImGui::End();
-    scene.draw();
+    Scene::get_scene()->draw();
     ImGui::Begin("Text Editor");
+    {
+      char const **ptr   = NULL;
+      u32          count = 0;
+      Scene::get_scene()->get_source_list(&ptr, &count);
+      static i32 current = -1;
+      if (ImGui::Combo("Select source", &current, ptr, (i32)count)) {
+        editor.SetText(Scene::get_scene()->get_source(ptr[current]));
+      }
+    }
     editor.Render("TextEditor");
     ImGui::End();
     bool show_demo_window = true;
     ImGui::ShowDemoWindow(&show_demo_window);
 
     ImGui::Render();
+    Scene::get_scene()->c2d.flush_rendering();
     ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
-    scene.c2d.flush_rendering();
+
     if (io.ConfigFlags & ImGuiConfigFlags_ViewportsEnable) {
       SDL_Window *  backup_current_window  = SDL_GL_GetCurrentWindow();
       SDL_GLContext backup_current_context = SDL_GL_GetCurrentContext();
@@ -211,7 +228,59 @@ int main_tick() {
 void main_loop() {
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
-  ImGuiIO &io = ImGui::GetIO();
+  ImGui::GetStyle().FrameRounding = 4.0f;
+  ImGui::GetStyle().GrabRounding  = 4.0f;
+
+  ImVec4 *colors                         = ImGui::GetStyle().Colors;
+  colors[ImGuiCol_Text]                  = ImVec4(0.95f, 0.96f, 0.98f, 1.00f);
+  colors[ImGuiCol_TextDisabled]          = ImVec4(0.36f, 0.42f, 0.47f, 1.00f);
+  colors[ImGuiCol_WindowBg]              = ImVec4(0.11f, 0.15f, 0.17f, 0.00f);
+  colors[ImGuiCol_ChildBg]               = ImVec4(0.15f, 0.18f, 0.22f, 1.00f);
+  colors[ImGuiCol_PopupBg]               = ImVec4(0.08f, 0.08f, 0.08f, 0.94f);
+  colors[ImGuiCol_Border]                = ImVec4(0.08f, 0.10f, 0.12f, 1.00f);
+  colors[ImGuiCol_BorderShadow]          = ImVec4(0.00f, 0.00f, 0.00f, 0.00f);
+  colors[ImGuiCol_FrameBg]               = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+  colors[ImGuiCol_FrameBgHovered]        = ImVec4(0.12f, 0.20f, 0.28f, 1.00f);
+  colors[ImGuiCol_FrameBgActive]         = ImVec4(0.09f, 0.12f, 0.14f, 1.00f);
+  colors[ImGuiCol_TitleBg]               = ImVec4(0.09f, 0.12f, 0.14f, 0.65f);
+  colors[ImGuiCol_TitleBgActive]         = ImVec4(0.08f, 0.10f, 0.12f, 1.00f);
+  colors[ImGuiCol_TitleBgCollapsed]      = ImVec4(0.00f, 0.00f, 0.00f, 0.51f);
+  colors[ImGuiCol_MenuBarBg]             = ImVec4(0.15f, 0.18f, 0.22f, 1.00f);
+  colors[ImGuiCol_ScrollbarBg]           = ImVec4(0.02f, 0.02f, 0.02f, 0.39f);
+  colors[ImGuiCol_ScrollbarGrab]         = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+  colors[ImGuiCol_ScrollbarGrabHovered]  = ImVec4(0.18f, 0.22f, 0.25f, 1.00f);
+  colors[ImGuiCol_ScrollbarGrabActive]   = ImVec4(0.09f, 0.21f, 0.31f, 1.00f);
+  colors[ImGuiCol_CheckMark]             = ImVec4(0.28f, 0.56f, 1.00f, 1.00f);
+  colors[ImGuiCol_SliderGrab]            = ImVec4(0.28f, 0.56f, 1.00f, 1.00f);
+  colors[ImGuiCol_SliderGrabActive]      = ImVec4(0.37f, 0.61f, 1.00f, 1.00f);
+  colors[ImGuiCol_Button]                = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+  colors[ImGuiCol_ButtonHovered]         = ImVec4(0.28f, 0.56f, 1.00f, 1.00f);
+  colors[ImGuiCol_ButtonActive]          = ImVec4(0.06f, 0.53f, 0.98f, 1.00f);
+  colors[ImGuiCol_Header]                = ImVec4(0.20f, 0.25f, 0.29f, 0.55f);
+  colors[ImGuiCol_HeaderHovered]         = ImVec4(0.26f, 0.59f, 0.98f, 0.80f);
+  colors[ImGuiCol_HeaderActive]          = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+  colors[ImGuiCol_Separator]             = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+  colors[ImGuiCol_SeparatorHovered]      = ImVec4(0.10f, 0.40f, 0.75f, 0.78f);
+  colors[ImGuiCol_SeparatorActive]       = ImVec4(0.10f, 0.40f, 0.75f, 1.00f);
+  colors[ImGuiCol_ResizeGrip]            = ImVec4(0.26f, 0.59f, 0.98f, 0.25f);
+  colors[ImGuiCol_ResizeGripHovered]     = ImVec4(0.26f, 0.59f, 0.98f, 0.67f);
+  colors[ImGuiCol_ResizeGripActive]      = ImVec4(0.26f, 0.59f, 0.98f, 0.95f);
+  colors[ImGuiCol_Tab]                   = ImVec4(0.11f, 0.15f, 0.17f, 1.00f);
+  colors[ImGuiCol_TabHovered]            = ImVec4(0.26f, 0.59f, 0.98f, 0.80f);
+  colors[ImGuiCol_TabActive]             = ImVec4(0.20f, 0.25f, 0.29f, 1.00f);
+  colors[ImGuiCol_TabUnfocused]          = ImVec4(0.11f, 0.15f, 0.17f, 1.00f);
+  colors[ImGuiCol_TabUnfocusedActive]    = ImVec4(0.11f, 0.15f, 0.17f, 1.00f);
+  colors[ImGuiCol_PlotLines]             = ImVec4(0.61f, 0.61f, 0.61f, 1.00f);
+  colors[ImGuiCol_PlotLinesHovered]      = ImVec4(1.00f, 0.43f, 0.35f, 1.00f);
+  colors[ImGuiCol_PlotHistogram]         = ImVec4(0.90f, 0.70f, 0.00f, 1.00f);
+  colors[ImGuiCol_PlotHistogramHovered]  = ImVec4(1.00f, 0.60f, 0.00f, 1.00f);
+  colors[ImGuiCol_TextSelectedBg]        = ImVec4(0.26f, 0.59f, 0.98f, 0.35f);
+  colors[ImGuiCol_DragDropTarget]        = ImVec4(1.00f, 1.00f, 0.00f, 0.90f);
+  colors[ImGuiCol_NavHighlight]          = ImVec4(0.26f, 0.59f, 0.98f, 1.00f);
+  colors[ImGuiCol_NavWindowingHighlight] = ImVec4(1.00f, 1.00f, 1.00f, 0.70f);
+  colors[ImGuiCol_NavWindowingDimBg]     = ImVec4(0.80f, 0.80f, 0.80f, 0.20f);
+  colors[ImGuiCol_ModalWindowDimBg]      = ImVec4(0.80f, 0.80f, 0.80f, 0.35f);
+  ImGuiIO &io                            = ImGui::GetIO();
   (void)io;
   io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
   // io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
@@ -222,7 +291,7 @@ void main_loop() {
   // io.ConfigViewportsNoTaskBarIcon = true;
 
   // Setup Dear ImGui style
-  ImGui::StyleColorsDark();
+  //  ImGui::StyleColorsDark();
   // ImGui::StyleColorsClassic();
 
   // When viewports are enabled we tweak WindowRounding/WindowBg so platform windows can look
@@ -252,6 +321,24 @@ void main_loop() {
 }
 
 int main() {
+  Scene::get_scene()->add_source("test",
+                                 R"(#version 300 es
+  precision highp float;
+  layout (location = 0) in vec2 vertex_position;
+  layout (location = 1) in vec4 instance_offset;
+  layout (location = 2) in vec3 instance_color;
+  layout (location = 3) in vec2 instance_size;
+
+  out vec3 color;
+  uniform mat4 projection;
+  void main() {
+      color = instance_color;
+      if (instance_offset.w > 0.0)
+        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy, instance_offset.z, 1.0) * projection;
+      else
+        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy, instance_offset.z, 1.0);
+  }
+  )");
   SDL_Init(SDL_INIT_VIDEO);
 
   window = SDL_CreateWindow("Gfx-Node", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 512, 512,

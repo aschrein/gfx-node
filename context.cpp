@@ -1,7 +1,141 @@
 #include "node_editor.h"
+#include "script.hpp"
 #include "simplefont.h"
 
-static Temporary_Storage<> ts = Temporary_Storage<>::create(1 * (1 << 20));
+struct _String2D {
+  char *   c_str;
+  uint32_t len;
+  float    x, y, z;
+  Color    color;
+  bool     world_space;
+};
+static Temporary_Storage<>     ts             = Temporary_Storage<>::create(16 * (1 << 20));
+static Temporary_Storage<List> list_storage   = Temporary_Storage<List>::create((1 << 12));
+Temporary_Storage<Line2D>      line_storage   = Temporary_Storage<Line2D>::create(1 << 17);
+Temporary_Storage<Rect2D>      quad_storage   = Temporary_Storage<Rect2D>::create(1 << 17);
+Temporary_Storage<_String2D>   string_storage = Temporary_Storage<_String2D>::create(1 << 18);
+Temporary_Storage<char>        char_storage   = Temporary_Storage<char>::create(1 * (1 << 20));
+
+struct Source {
+  // Name and text are also zero terminated
+  string_ref name;
+  string_ref text;
+  u8 *       storage;
+  void       init(string_ref name, string_ref text) {
+    storage = (u8 *)malloc(name.len + text.len + 2);
+    memcpy(storage, name.ptr, name.len);
+    storage[name.len] = 0;
+    memcpy(storage + name.len + 1, text.ptr, text.len);
+    storage[name.len + text.len + 1] = 0;
+    this->name = string_ref{.ptr = (char const *)storage, .len = name.len};
+    this->text = string_ref{.ptr = (char const *)(storage + name.len + 1), .len = text.len};
+  }
+  void release() {
+    free(storage);
+    memset(this, 0, sizeof(*this));
+  }
+};
+
+struct SourceDB {
+  Array<Source>               sources;
+  Array<char const *>           names_packed;
+  Hash_Table<string_ref, u32> name2id;
+  void                        init() {
+    sources.init();
+    name2id.init();
+  }
+  void release() {
+    sources.release();
+    name2id.release();
+  }
+  void rebuild_index() {
+    names_packed.release();
+    ito(sources.size) {
+      if (sources[i].storage != NULL) {
+        names_packed.push(sources[i].name.ptr);
+      }
+    }
+  }
+  void remove_source(string_ref name) {
+    ASSERT_DEBUG(name2id.contains(name));
+    u32 id = name2id.get(name);
+    name2id.remove(name);
+    sources[id].release();
+  }
+  void add_source(string_ref name, string_ref text) {
+    ASSERT_DEBUG(!name2id.contains(name));
+    Source src;
+    src.init(name, text);
+    sources.push(src);
+    name2id.insert(src.name, sources.size - 1);
+  }
+  void update_text(string_ref name, string_ref new_text) {
+    ASSERT_DEBUG(name2id.contains(name));
+    u32 id = name2id.get(name);
+    sources[id].release();
+    sources[id].init(name, new_text);
+  }
+  string_ref get_text(string_ref name) {
+    ASSERT_DEBUG(name2id.contains(name));
+    u32 id = name2id.get(name);
+    return sources[id].text;
+  }
+};
+
+struct _Scene : public Scene {
+  SourceDB sourcedb;
+  void     new_frame() { sourcedb.rebuild_index(); }
+  void     init() { sourcedb.init(); }
+  void     release() { sourcedb.release(); }
+  void     reset() {
+    release();
+    init();
+  }
+  void get_source_list(char const ***ptr, u32 *count) {
+    ASSERT_DEBUG(count != NULL);
+    ASSERT_DEBUG(ptr != NULL);
+    *count = sourcedb.names_packed.size;
+    *ptr = sourcedb.names_packed.ptr;
+  }
+  char const * get_source(char const * name) { return sourcedb.get_text(stref_s(name)).ptr; }
+  void set_source(char const * name, char const * new_src) { sourcedb.update_text(stref_s(name), stref_s(new_src)); }
+  void remove_source(char const * name) { sourcedb.remove_source(stref_s(name)); }
+  void add_source(char const * name, char const * text) { sourcedb.add_source(stref_s(name), stref_s(text)); }
+};
+
+void Scene::get_source_list(char const ***ptr, u32 *count) {
+  _Scene *scene = (_Scene *)this;
+  scene->get_source_list(ptr, count);
+}
+char const * Scene::get_source(char const * name) {
+  _Scene *scene = (_Scene *)this;
+  return scene->get_source(name);
+}
+void Scene::set_source(char const * name, char const * new_src) {
+  _Scene *scene = (_Scene *)this;
+  scene->set_source(name, new_src);
+}
+void Scene::remove_source(char const * name) {
+  _Scene *scene = (_Scene *)this;
+
+  scene->remove_source(name);
+}
+void Scene::add_source(char const * name, char const * text) {
+  _Scene *scene = (_Scene *)this;
+  scene->add_source(name, text);
+}
+void Scene::reset() {
+  _Scene *scene = (_Scene *)this;
+  scene->reset();
+}
+
+_Scene     g_scene;
+static int _init_ = [] {
+  g_scene.init();
+  return 0;
+}();
+
+Scene *Scene::get_scene() { return &g_scene; }
 
 static u16 f32_to_u16(f32 x) { return (u16)(clamp(x, 0.0f, 1.0f) * ((1 << 16) - 1)); }
 
@@ -39,6 +173,50 @@ u32 parse_color_u32(char const *str) {
   u32 g = hex_to_decimal(str[3]) * 16 + hex_to_decimal(str[4]);
   u32 b = hex_to_decimal(str[5]) * 16 + hex_to_decimal(str[6]);
   return r | (g << 8) | (b << 16);
+}
+
+// namespace Visual {
+// struct Node {
+////
+//// +-------+ ^
+//// |       | |
+//// |   +   | | size.y * 2
+//// |   pos | |
+//// +-------+ V
+//// <------->
+////   size.x * 2
+////
+//  char name[0x10];
+//  float2 pos;
+//  float2 size;
+
+//};
+//}
+void Context2D::flush_rendering() {
+  render_stuff();
+  line_storage.exit_scope();
+  quad_storage.exit_scope();
+  string_storage.exit_scope();
+  char_storage.exit_scope();
+}
+void Context2D::draw_rect(Rect2D p) { quad_storage.push(p); }
+void Context2D::draw_line(Line2D l) { line_storage.push(l); }
+void Context2D::draw_string(String2D s) {
+  size_t len = strlen(s.c_str);
+  if (len == 0) return;
+  char *dst = char_storage.alloc(len + 1);
+  memcpy(dst, s.c_str, len);
+  dst[len] = '\0';
+  _String2D internal_string;
+  internal_string.color       = s.color;
+  internal_string.c_str       = dst;
+  internal_string.len         = (uint32_t)len;
+  internal_string.x           = s.x;
+  internal_string.y           = s.y;
+  internal_string.z           = s.z;
+  internal_string.world_space = s.world_space;
+
+  string_storage.push(internal_string);
 }
 
 void Oth_Camera::update(u32 viewport_x, u32 viewport_y, u32 viewport_width, u32 viewport_height) {
@@ -201,7 +379,7 @@ void Oth_Camera::consume_event(SDL_Event event) {
   } break;
   case SDL_MOUSEWHEEL: {
     float dz = pos.z * (float)(event.wheel.y > 0 ? 1 : -1) * 2.0e-1;
-    //    fprintf(stdout, "dz: %i\n", event.wheel.y);
+        fprintf(stdout, "dz: %f\n", dz);
     pos.x += -0.5f * dz * (window_to_screen((int2){(int32_t)old_mp_x, 0}).x);
     pos.y += -0.5f * dz * (window_to_screen((int2){0, (int32_t)old_mp_y}).y);
     pos.z += dz;
@@ -839,22 +1017,29 @@ void redraw() {
 }
 
 void Scene::draw() {
+  _Scene *scene = (_Scene*)this;
+  scene->new_frame();
+  line_storage.enter_scope();
+  quad_storage.enter_scope();
+  string_storage.enter_scope();
+  char_storage.enter_scope();
   ts.enter_scope();
   c2d.imcanvas_start();
   defer({
     c2d.imcanvas_end();
     ts.exit_scope();
   });
-  u32    W          = 256;
-  u32    H          = 256;
-  float  dx         = 1.0f;
-  float  dy         = 1.0f;
-  float  size_x     = 256.0f;
-  float  size_y     = 256.0f;
-  float  QUAD_LAYER = 1.0f / 256.0f;
-  float  GRID_LAYER = 2.0f / 256.0f;
-  float  TEXT_LAYER = 3.0f / 256.0f;
-  float3 grid_color = parse_color_float3(dark_mode::g_grid_color);
+  u32    W             = 256;
+  u32    H             = 256;
+  float  dx            = 1.0f;
+  float  dy            = 1.0f;
+  float  size_x        = 256.0f;
+  float  size_y        = 256.0f;
+  float  QUAD_LAYER    = 1.0f / 256.0f;
+  float  GRID_LAYER    = 2.0f / 256.0f;
+  float  NODE_BG_LAYER = 10.0f / 256.0f;
+  float  TEXT_LAYER    = 30.0f / 256.0f;
+  float3 grid_color    = parse_color_float3(dark_mode::g_grid_color);
   c2d.draw_string({//
                    .c_str = "hello world!",
                    .x     = c2d.camera.mouse_world_x,
@@ -887,6 +1072,16 @@ void Scene::draw() {
                    .z     = GRID_LAYER,
                    .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
   }
+  //  ito(nodes.size) {
+  //    Node &node = nodes.ptr[i];
+  //    c2d.draw_rect({//
+  //                   .x      = node.pos.x - node.size.x,
+  //                   .y      = node.pos.y - node.size.y,
+  //                   .z      = NODE_BG_LAYER,
+  //                   .width  = node.size.x,
+  //                   .height = node.size.y,
+  //                   .color = {.r = 0.5f, .g = 0.5f, .b = 0.5f}});
+  //  }
 }
 
 // struct Console {

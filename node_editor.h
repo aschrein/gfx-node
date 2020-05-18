@@ -103,71 +103,40 @@ struct Oth_Camera {
     return //
         !(max_x < world_min_x || min_x > world_max_x || max_y < world_min_y || min_y > world_max_y);
   }
-  void      consume_event(SDL_Event event);
+  void consume_event(SDL_Event event);
+};
+
+struct Color {
+  float r, g, b;
+};
+struct Rect2D {
+  float x, y, z, width, height;
+  Color color;
+  bool  world_space = true;
+};
+struct Line2D {
+  float x0, y0, x1, y1, z;
+  Color color;
+  bool  world_space = true;
+};
+struct String2D {
+  char const *c_str;
+  float       x, y, z;
+  Color       color;
+  bool        world_space = true;
 };
 
 struct Context2D {
   Oth_Camera camera;
-  struct Color {
-    float r, g, b;
-  };
-  struct Rect2D {
-    float x, y, z, width, height;
-    Color color;
-    bool  world_space = true;
-  };
-  struct Line2D {
-    float x0, y0, x1, y1, z;
-    Color color;
-    bool  world_space = true;
-  };
-  struct String2D {
-    char const *c_str;
-    float       x, y, z;
-    Color       color;
-    bool        world_space = true;
-  };
-  struct _String2D {
-    char *   c_str;
-    uint32_t len;
-    float    x, y, z;
-    Color    color;
-    bool     world_space;
-  };
-  void draw_rect(Rect2D p) { quad_storage.push(p); }
-  void draw_line(Line2D l) { line_storage.push(l); }
-  void draw_string(String2D s) {
-    size_t len = strlen(s.c_str);
-    if (len == 0) return;
-    char *dst = char_storage.alloc(len + 1);
-    memcpy(dst, s.c_str, len);
-    dst[len] = '\0';
-    _String2D internal_string;
-    internal_string.color       = s.color;
-    internal_string.c_str       = dst;
-    internal_string.len         = (uint32_t)len;
-    internal_string.x           = s.x;
-    internal_string.y           = s.y;
-    internal_string.z           = s.z;
-    internal_string.world_space = s.world_space;
 
-    string_storage.push(internal_string);
-  }
+  void draw_rect(Rect2D p);
+  void draw_line(Line2D l);
+  void draw_string(String2D s);
   void imcanvas_start();
-  void flush_rendering() {
-    render_stuff();
-    line_storage.exit_scope();
-    quad_storage.exit_scope();
-    string_storage.exit_scope();
-    char_storage.exit_scope();
-  }
+  void flush_rendering();
   void imcanvas_end();
   void render_stuff();
-  // Fields
-  Temporary_Storage<Line2D>    line_storage   = Temporary_Storage<Line2D>::create(1 << 17);
-  Temporary_Storage<Rect2D>    quad_storage   = Temporary_Storage<Rect2D>::create(1 << 17);
-  Temporary_Storage<_String2D> string_storage = Temporary_Storage<_String2D>::create(1 << 18);
-  Temporary_Storage<char>      char_storage   = Temporary_Storage<char>::create(1 * (1 << 20));
+
   // Gui State
   u32  viewport_x;
   u32  viewport_width;
@@ -177,7 +146,7 @@ struct Context2D {
   u32  screen_height;
   int2 old_mpos{};
   bool hovered;
-  void      consume_event(SDL_Event event);
+  void consume_event(SDL_Event event);
 };
 
 struct Scene {
@@ -185,6 +154,16 @@ struct Scene {
   u32       add_node(char const *name);
   void      draw();
   void      consume_event(SDL_Event event);
+  // called per frame
+  void get_source_list(char const ***ptr, u32 *count);
+  // return long-lived reference
+  char const *get_source(char const *name);
+  // new_src: short-lived reference
+  void          set_source(char const * name, char const * new_src);
+  void          remove_source(char const * name);
+  void          add_source(char const * name, char const * text);
+  void          reset();
+  static Scene *get_scene();
 };
 
 #endif // NODE_EDITOR_H

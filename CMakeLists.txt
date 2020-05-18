@@ -12,6 +12,9 @@ context.cpp
 3rdparty/imgui/examples/imgui_impl_sdl.cpp
 3rdparty/ImGuiColorTextEdit/TextEditor.cpp
 )
+add_executable(data_struct_test_0
+tests/data_struct_test_0.cpp
+)
 target_include_directories(gfxnode
   PRIVATE
   3rdparty
@@ -19,5 +22,5 @@ target_include_directories(gfxnode
   ${CMAKE_SOURCE_DIR}
   ${CMAKE_BINARY_DIR}
 )
-set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DIMGUI_IMPL_OPENGL_LOADER_CUSTOM -march=skylake -Werror -ferror-limit=1 -fno-exceptions -fno-rtti -fvisibility=hidden")
+set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -DIMGUI_IMPL_OPENGL_LOADER_CUSTOM -march=skylake -Werror -ferror-limit=1 -fno-exceptions -fno-rtti -fvisibility=hidden")
 target_link_libraries(gfxnode SDL2 OpenGL pthread)

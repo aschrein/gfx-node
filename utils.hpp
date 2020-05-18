@@ -523,19 +523,17 @@ struct Default_Allocator {
   static void free(void *ptr) { tl_free(ptr); }
 };
 
-template <typename T, typename Allcator_t = Default_Allocator> struct Array {
+template <typename T, size_t grow_k = 0x100, typename Allcator_t = Default_Allocator> struct Array {
   T *    ptr;
   size_t size;
   size_t capacity;
-  size_t grow_k;
-  void   init(uint32_t capacity = 0, size_t grow_k = 0x100) {
+  void   init(uint32_t capacity = 0) {
     if (capacity != 0)
       ptr = (T *)Allcator_t::alloc(sizeof(T) * capacity);
     else
       ptr = NULL;
     size           = 0;
     this->capacity = capacity;
-    this->grow_k   = grow_k;
   }
   u32  get_size() { return this->size; }
   u32  has_items() { return get_size() != 0; }
@@ -551,7 +549,6 @@ template <typename T, typename Allcator_t = Default_Allocator> struct Array {
       ptr      = (T *)Allcator_t::realloc(ptr, sizeof(T) * capacity, sizeof(T) * new_capacity);
       capacity = new_capacity;
     }
-    ASSERT_DEBUG(capacity >= size + 1);
     ASSERT_DEBUG(ptr != NULL);
     size = new_size;
   }
@@ -560,17 +557,17 @@ template <typename T, typename Allcator_t = Default_Allocator> struct Array {
       memset(ptr, 0, sizeof(T) * capacity);
     }
   }
-  Array copy() {
-    Array out;
-    out.ptr      = NULL;
-    out.size     = size;
-    out.capacity = capacity;
-    if (size > 0) {
-      out.resize(&out, capacity);
-      memcpy(out.ptr, ptr, capacity * sizeof(T));
-    }
-    return out;
-  }
+  //  Array copy() {
+  //    Array out;
+  //    out.ptr      = NULL;
+  //    out.size     = size;
+  //    out.capacity = capacity;
+  //    if (size > 0) {
+  //      out.resize(&out, capacity);
+  //      memcpy(out.ptr, ptr, capacity * sizeof(T));
+  //    }
+  //    return out;
+  //  }
   void push(T elem) {
     if (size + 1 > capacity) {
       uint64_t new_capacity = capacity + grow_k;
@@ -594,6 +591,11 @@ template <typename T, typename Allcator_t = Default_Allocator> struct Array {
     }
     ASSERT_DEBUG(size != 0);
     size -= 1;
+    if (size == 0) {
+      Allcator_t::free(ptr);
+      ptr      = NULL;
+      capacity = 0;
+    }
     return elem;
   }
   T &operator[](size_t i) {
@@ -604,10 +606,10 @@ template <typename T, typename Allcator_t = Default_Allocator> struct Array {
 };
 
 template <typename T, u32 N, typename Allcator_t = Default_Allocator> struct SmallArray {
-  T                    _local[N];
-  size_t               _size;
-  Array<T, Allcator_t> _array;
-  void                 init() {
+  T                           _local[N];
+  size_t                      _size;
+  Array<T, N * 3, Allcator_t> _array;
+  void                        init() {
     memset(this, 0, sizeof(*this));
     _array.init();
   }
@@ -632,80 +634,60 @@ template <typename T, u32 N, typename Allcator_t = Default_Allocator> struct Sma
   size_t get_size() { return _size; }
 };
 
-template <typename K> struct Hash_Set {
+template <typename K, typename Allcator_t = Default_Allocator, size_t grow_k = 0x100,
+          size_t MAX_ATTEMPTS = 0x10>
+struct Hash_Set {
   struct Hash_Pair {
     K        key;
     uint64_t hash;
   };
-  Array<Hash_Pair> arr;
-  size_t           item_count = 0;
-  size_t           grow_k     = 16;
-  uint32_t         attempts   = 16;
-
-  void release() {
+  using Array_t = Array<Hash_Pair, grow_k, Allcator_t>;
+  Array_t arr;
+  size_t  item_count;
+  void    release() {
     arr.release();
     item_count = 0;
   }
-  bool insert(K key) {
-    {
-      uint32_t attempts = attempts;
-      uint64_t hash     = hash_of(key);
-      uint64_t size     = arr.capacity;
-      if (size == 0) {
-        arr.resize(grow_k);
-        arr.memzero();
-        size = arr.capacity;
-      }
-      Hash_Pair pair;
-      pair.key            = key;
-      uint32_t attempt_id = 0;
-      for (; attempt_id < attempts; ++attempt_id) {
-        uint64_t id = hash % size;
-        if (hash != 0) {
-          pair.hash = hash;
-          if (arr.ptr[id].hash == 0) {
-            memcpy(arr.ptr + id, &pair, sizeof(Hash_Pair));
-            item_count += 1;
-            return true;
-          }
-        }
-        hash = hash_of(hash);
-      }
-    }
-    {
-      Array<Hash_Pair> old_arr = arr;
-      {
-        Array<Hash_Pair> new_arr(0);
-        new_arr.resize(&new_arr, old_arr.capacity + grow_k);
-        new_arr.memzero(&new_arr);
-        arr        = new_arr;
-        item_count = 0;
-      }
-      uint32_t i = 0;
-      for (; i < old_arr.capacity; ++i) {
-        Hash_Pair pair = old_arr.ptr[i];
-        if (pair.hash != 0) {
-          push(pair.key);
-        }
-      }
-      old_arr.release();
-      bool res = push(key);
-      ASSERT_DEBUG(res == true);
-      return true;
-    }
-    ASSERT_DEBUG(false && "unreachable");
+  void init() {
+    arr.init();
+    item_count = 0;
   }
 
-  bool contains(K key) {
+  i32 find(K key) {
     uint64_t hash = hash_of(key);
     uint64_t size = arr.capacity;
-    if (size == 0) return false;
-    Array<Hash_Pair> *arr        = &arr;
-    uint32_t          attempt_id = 0;
-    for (; attempt_id < attempts; ++attempt_id) {
+    if (size == 0) return -1;
+    uint32_t attempt_id = 0;
+    for (; attempt_id < MAX_ATTEMPTS; ++attempt_id) {
       uint64_t id = hash % size;
       if (hash != 0) {
-        if (arr->ptr[id].key == key) {
+        if (arr.ptr[id].key == key) {
+          return (i32)id;
+        }
+      }
+      hash = hash_of(hash);
+    }
+    return -1;
+  }
+
+  bool try_insert(K key) {
+    uint64_t hash = hash_of(key);
+    uint64_t size = arr.capacity;
+    if (size == 0) {
+      arr.resize(grow_k);
+      arr.memzero();
+      size = arr.capacity;
+    }
+    Hash_Pair pair;
+    pair.key  = key;
+    pair.hash = hash;
+    for (uint32_t attempt_id = 0; attempt_id < MAX_ATTEMPTS; ++attempt_id) {
+      uint64_t id = hash % size;
+      if (hash != 0) {
+        pair.hash = hash;
+        if (arr.ptr[id].hash == 0) {
+          arr.ptr[id] = pair;
+          item_count += 1;
           return true;
         }
       }
@@ -713,91 +695,108 @@ template <typename K> struct Hash_Set {
     }
     return false;
   }
+
+  bool try_resize(size_t new_size) {
+    ASSERT_DEBUG(new_size > 0);
+    Array_t old_arr        = arr;
+    size_t  old_item_count = item_count;
+    {
+      Array_t new_arr;
+      new_arr.init();
+      ASSERT_DEBUG(new_size > 0);
+      new_arr.resize(new_size);
+      new_arr.memzero();
+      arr        = new_arr;
+      item_count = 0;
+    }
+    uint32_t i = 0;
+    for (; i < old_arr.capacity; ++i) {
+      Hash_Pair pair = old_arr.ptr[i];
+      if (pair.hash != 0) {
+        bool suc = try_insert(pair.key);
+        if (!suc) {
+          arr.release();
+          arr        = old_arr;
+          item_count = old_item_count;
+          return false;
+        }
+      }
+    }
+    old_arr.release();
+    return true;
+  }
+
+  bool remove(K key) {
+    i32 id = find(key);
+    if (id > -1) {
+      ASSERT_DEBUG(item_count > 0);
+      arr.ptr[id].hash = 0u;
+      item_count -= 1;
+      if (item_count == 0) {
+        arr.release();
+      } else if (arr.size + grow_k < arr.capacity) {
+        try_resize(arr.capacity - grow_k);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  bool insert(K key) {
+    u32  iters = 0x10;
+    bool suc   = false;
+    while (!(suc = try_insert(key))) {
+      u32    resize_iters = 0x10;
+      size_t new_size     = arr.capacity + grow_k;
+      bool   resize_suc   = false;
+      while (!(resize_suc = try_resize(new_size))) {
+        if (resize_iters == 0) break;
+        new_size += grow_k;
+        resize_iters -= 1;
+      }
+      (void)resize_suc;
+      ASSERT_DEBUG(resize_suc == true);
+      if (iters == 0) break;
+      iters -= 1;
+    }
+    ASSERT_DEBUG(suc == true);
+    return suc;
+  }
+
+  bool contains(K key) { return find(key) != -1; }
 };
 
-// template <typename K, typename V> struct HashArray {
-//  using HP = Hash_Pair<K, V>;
-//  Array<HP> arr;
-//  size_t    item_count = 0;
-//  size_t    grow_k     = 16;
-//  uint32_t  attempts   = 16;
+template <typename K, typename V> struct Map_Pair {
+  K    key;
+  V    value;
+  bool operator==(Map_Pair const &that) const { return this->key == that.key; }
+};
 
-//  void release() {
-//    arr.release();
-//    item_count = 0;
-//  }
-//  bool push(K key, V value) {
-//    {
-//      uint32_t attempts = attempts;
-//      uint64_t hash     = hash_of(key);
-//      uint64_t size     = arr.capacity;
-//      if (size == 0) {
-//        arr.resize(grow_k);
-//        arr.memzero();
-//        size = arr.capacity;
-//      }
-//      HP pair;
-//      pair.key            = key;
-//      pair.value          = value;
-//      uint32_t attempt_id = 0;
-//      for (; attempt_id < attempts; ++attempt_id) {
-//        uint64_t id = hash % size;
-//        if (hash != 0) {
-//          pair.hash = hash;
-//          if (arr.ptr[id].hash == 0) {
-//            memcpy(arr.ptr + id, &pair, sizeof(HP));
-//            item_count += 1;
-//            return true;
-//          }
-//        }
-//        hash = hash_of(hash);
-//      }
-//    }
-//    {
-//      Array<HP> old_arr = arr;
-//      {
-//        Array<HP> new_arr(0);
-//        new_arr.resize(&new_arr, old_arr.capacity + grow_k);
-//        new_arr.memzero(&new_arr);
-//        arr        = new_arr;
-//        item_count = 0;
-//      }
-//      uint32_t i = 0;
-//      for (; i < old_arr.capacity; ++i) {
-//        HP pair = old_arr.ptr[i];
-//        if (pair.hash != 0) {
-//          push(pair.key, pair.value);
-//        }
-//      }
-//      old_arr.release();
-//      bool res = push(key, value);
-//      ASSERT_DEBUG(res == true);
-//      return true;
-//    }
-//    ASSERT_DEBUG(false && "unreachable");
-//  }
+template <typename K, typename V> u64 hash_of(Map_Pair<K, V> const &item) {
+  return hash_of(item.key);
+}
 
-//  bool get(K key, V *value) {
-//    uint64_t hash = hash_of(key);
-//    uint64_t size = arr.capacity;
-//    if (size == 0) return false;
-//    Array<HP> *arr        = &arr;
-//    uint32_t   attempt_id = 0;
-//    for (; attempt_id < attempts; ++attempt_id) {
-//      uint64_t id = hash % size;
-//      if (hash != 0) {
-//        if (arr->ptr[id].key == key) {
-//          if (value != NULL) *value = arr->ptr[id].value;
-//          return true;
-//        }
-//      }
-//      hash = hash_of(hash);
-//    }
-//    return false;
-//  }
+template <typename K, typename V, typename Allcator_t = Default_Allocator, size_t grow_k = 0x100,
+          size_t MAX_ATTEMPTS = 0x10>
+struct Hash_Table {
+  Hash_Set<Map_Pair<K, V>, Allcator_t, grow_k, MAX_ATTEMPTS> set;
+  void                                                       release() { set.release(); }
+  void                                                       init() { set.init(); }
 
-//  bool has(K key) { return get(key, NULL); }
-//};
+  i32 find(K key) { return set.find(Map_Pair<K, V>{.key = key, .value = {}}); }
+
+  V get(K key) {
+    i32 id = set.find(Map_Pair<K, V>{.key = key, .value = {}});
+    ASSERT_DEBUG(id >= 0);
+    return set.arr[id].key.value;
+  }
+
+  bool remove(K key) { return set.remove(Map_Pair<K, V>{.key = key, .value = {}}); }
+
+  bool insert(K key, V value) { return set.insert(Map_Pair<K, V>{.key = key, .value = value}); }
+
+  bool contains(K key) { return set.contains(Map_Pair<K, V>{.key = key, .value = {}}); }
+};
 
 #endif
 
