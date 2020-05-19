@@ -17,7 +17,11 @@ void MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLs
           (type == GL_DEBUG_TYPE_ERROR ? "** GL ERROR **" : ""), type, severity, message);
 }
 #endif
-
+void dump_scene() {
+  TMP_STORAGE_SCOPE;
+      string_ref dump = Scene::get_scene()->to_json_tmp();
+      dump_file("scene.json", dump.ptr, dump.len);
+}
 static int quit_loop = 0;
 
 SDL_Window *               window = NULL;
@@ -71,6 +75,9 @@ void Context2D::imcanvas_start() {
     if (ImGui::BeginMenu("Sub-menu")) {
       ImGui::MenuItem("Click me");
       ImGui::EndMenu();
+    }
+    if (ImGui::Button("Dump scene")) {
+      dump_scene();
     }
     if (ImGui::Button("Exit")) std::exit(0);
     ImGui::Separator();
@@ -179,14 +186,42 @@ int main_tick() {
     ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), ImGuiDockNodeFlags_PassthruCentralNode);
     ImGui::End();
     Scene::get_scene()->draw();
+    ImGui::Begin("Scene");
+    if (ImGui::Button("Dump")) {
+      dump_scene();
+    }
+    ImGui::End();
     ImGui::Begin("Text Editor");
     {
       char const **ptr   = NULL;
       u32          count = 0;
       Scene::get_scene()->get_source_list(&ptr, &count);
       static i32 current = -1;
-      if (ImGui::Combo("Select source", &current, ptr, (i32)count)) {
+      if (ImGui::Combo("Source", &current, ptr, (i32)count)) {
         editor.SetText(Scene::get_scene()->get_source(ptr[current]));
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Save")) {
+        if (current >= 0) {
+          Scene::get_scene()->set_source(ptr[current], editor.GetText().c_str());
+        }
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("New")) {
+        ImGui::OpenPopup("new_source_popup");
+      }
+      if (ImGui::BeginPopup("new_source_popup")) {
+        static char buf[0x20] = {};
+        ImGui::InputText("Name", buf, IM_ARRAYSIZE(buf));
+        if (ImGui::MenuItem("Create")) {
+          if (strnlen(buf, sizeof(buf)) > 0) {
+            Scene::get_scene()->add_source(buf, "");
+          }
+        }
+        if (ImGui::MenuItem("Cancel")) {
+          ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
       }
     }
     editor.Render("TextEditor");
@@ -321,28 +356,35 @@ void main_loop() {
 }
 
 int main() {
-  Scene::get_scene()->add_source("test",
-                                 R"(#version 300 es
-  precision highp float;
-  layout (location = 0) in vec2 vertex_position;
-  layout (location = 1) in vec4 instance_offset;
-  layout (location = 2) in vec3 instance_color;
-  layout (location = 3) in vec2 instance_size;
-
-  out vec3 color;
-  uniform mat4 projection;
-  void main() {
-      color = instance_color;
-      if (instance_offset.w > 0.0)
-        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy, instance_offset.z, 1.0) * projection;
-      else
-        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy, instance_offset.z, 1.0);
+  {
+    tl_alloc_tmp_enter();
+    defer(tl_alloc_tmp_exit());
+    Scene::get_scene()->init_from_json(read_file_tmp("scene.json"));
   }
-  )");
+  //  Scene::get_scene()->add_source("test",
+  //                                 R"(#version 300 es
+  //  precision highp float;
+  //  layout (location = 0) in vec2 vertex_position;
+  //  layout (location = 1) in vec4 instance_offset;
+  //  layout (location = 2) in vec3 instance_color;
+  //  layout (location = 3) in vec2 instance_size;
+
+  //  out vec3 color;
+  //  uniform mat4 projection;
+  //  void main() {
+  //      color = instance_color;
+  //      if (instance_offset.w > 0.0)
+  //        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy,
+  //        instance_offset.z, 1.0) * projection;
+  //      else
+  //        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy,
+  //        instance_offset.z, 1.0);
+  //  }
+  //  )");
   SDL_Init(SDL_INIT_VIDEO);
 
-  window = SDL_CreateWindow("Gfx-Node", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 512, 512,
-                            SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
+  window = SDL_CreateWindow("Gfx-Node", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 1024,
+                            1024, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_SHOWN);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
 #if __EMSCRIPTEN__
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);

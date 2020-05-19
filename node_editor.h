@@ -163,6 +163,8 @@ struct Scene {
   void          remove_source(char const * name);
   void          add_source(char const * name, char const * text);
   void          reset();
+  void init_from_json(char const *str);
+  string_ref to_json_tmp();
   static Scene *get_scene();
 };
 

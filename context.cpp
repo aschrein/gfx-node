@@ -22,11 +22,14 @@ struct Source {
   string_ref text;
   u8 *       storage;
   void       init(string_ref name, string_ref text) {
+    ASSERT_DEBUG(name.len != 0);
     storage = (u8 *)malloc(name.len + text.len + 2);
     memcpy(storage, name.ptr, name.len);
-    storage[name.len] = 0;
-    memcpy(storage + name.len + 1, text.ptr, text.len);
-    storage[name.len + text.len + 1] = 0;
+    storage[name.len] = '\0';
+    if (text.ptr != NULL && text.len != 0) {
+      memcpy(storage + name.len + 1, text.ptr, text.len);
+    }
+    storage[name.len + text.len + 1] = '\0';
     this->name = string_ref{.ptr = (char const *)storage, .len = name.len};
     this->text = string_ref{.ptr = (char const *)(storage + name.len + 1), .len = text.len};
   }
@@ -38,7 +41,7 @@ struct Source {
 
 struct SourceDB {
   Array<Source>               sources;
-  Array<char const *>           names_packed;
+  Array<char const *>         names_packed;
   Hash_Table<string_ref, u32> name2id;
   void                        init() {
     sources.init();
@@ -66,14 +69,26 @@ struct SourceDB {
     ASSERT_DEBUG(!name2id.contains(name));
     Source src;
     src.init(name, text);
-    sources.push(src);
-    name2id.insert(src.name, sources.size - 1);
+    // linear search for a new slot
+    u32 new_slot = 0;
+    ito(sources.size) {
+      if (sources[i].storage == NULL) {
+        break;
+      }
+      new_slot++;
+    }
+    if (new_slot == sources.size)
+      sources.push(src);
+    else
+      sources[new_slot] = src;
+    name2id.insert(src.name, new_slot);
   }
   void update_text(string_ref name, string_ref new_text) {
-    ASSERT_DEBUG(name2id.contains(name));
-    u32 id = name2id.get(name);
-    sources[id].release();
-    sources[id].init(name, new_text);
+    tl_alloc_tmp_enter();
+    defer(tl_alloc_tmp_exit());
+    name = stref_tmp_copy(name);
+    remove_source(name);
+    add_source(name, new_text);
   }
   string_ref get_text(string_ref name) {
     ASSERT_DEBUG(name2id.contains(name));
@@ -95,32 +110,36 @@ struct _Scene : public Scene {
     ASSERT_DEBUG(count != NULL);
     ASSERT_DEBUG(ptr != NULL);
     *count = sourcedb.names_packed.size;
-    *ptr = sourcedb.names_packed.ptr;
+    *ptr   = sourcedb.names_packed.ptr;
   }
-  char const * get_source(char const * name) { return sourcedb.get_text(stref_s(name)).ptr; }
-  void set_source(char const * name, char const * new_src) { sourcedb.update_text(stref_s(name), stref_s(new_src)); }
-  void remove_source(char const * name) { sourcedb.remove_source(stref_s(name)); }
-  void add_source(char const * name, char const * text) { sourcedb.add_source(stref_s(name), stref_s(text)); }
+  char const *get_source(char const *name) { return sourcedb.get_text(stref_s(name)).ptr; }
+  void        set_source(char const *name, char const *new_src) {
+    sourcedb.update_text(stref_s(name), stref_s(new_src));
+  }
+  void remove_source(char const *name) { sourcedb.remove_source(stref_s(name)); }
+  void add_source(char const *name, char const *text) {
+    sourcedb.add_source(stref_s(name), stref_s(text));
+  }
 };
 
 void Scene::get_source_list(char const ***ptr, u32 *count) {
   _Scene *scene = (_Scene *)this;
   scene->get_source_list(ptr, count);
 }
-char const * Scene::get_source(char const * name) {
+char const *Scene::get_source(char const *name) {
   _Scene *scene = (_Scene *)this;
   return scene->get_source(name);
 }
-void Scene::set_source(char const * name, char const * new_src) {
+void Scene::set_source(char const *name, char const *new_src) {
   _Scene *scene = (_Scene *)this;
   scene->set_source(name, new_src);
 }
-void Scene::remove_source(char const * name) {
+void Scene::remove_source(char const *name) {
   _Scene *scene = (_Scene *)this;
 
   scene->remove_source(name);
 }
-void Scene::add_source(char const * name, char const * text) {
+void Scene::add_source(char const *name, char const *text) {
   _Scene *scene = (_Scene *)this;
   scene->add_source(name, text);
 }
@@ -379,7 +398,7 @@ void Oth_Camera::consume_event(SDL_Event event) {
   } break;
   case SDL_MOUSEWHEEL: {
     float dz = pos.z * (float)(event.wheel.y > 0 ? 1 : -1) * 2.0e-1;
-        fprintf(stdout, "dz: %f\n", dz);
+//    fprintf(stdout, "dz: %f\n", dz);
     pos.x += -0.5f * dz * (window_to_screen((int2){(int32_t)old_mp_x, 0}).x);
     pos.y += -0.5f * dz * (window_to_screen((int2){0, (int32_t)old_mp_y}).y);
     pos.z += dz;
@@ -1017,7 +1036,7 @@ void redraw() {
 }
 
 void Scene::draw() {
-  _Scene *scene = (_Scene*)this;
+  _Scene *scene = (_Scene *)this;
   scene->new_frame();
   line_storage.enter_scope();
   quad_storage.enter_scope();

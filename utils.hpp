@@ -348,11 +348,25 @@ static uint64_t hash_of(string_ref a) {
 /** String view of a static string
  */
 static string_ref stref_s(char const *static_string) {
+  if (static_string == NULL || static_string[0] == '\0') return string_ref{.ptr = NULL, .len = 0};
   ASSERT_DEBUG(static_string != NULL);
   string_ref out;
   out.ptr = static_string;
   out.len = strlen(static_string);
   ASSERT_DEBUG(out.len != 0);
+  return out;
+}
+
+/** String view of a temporal string
+  Uses thread local temporal storage
+  */
+static string_ref stref_tmp_copy(string_ref a) {
+  string_ref out;
+  out.len = a.len;
+  ASSERT_DEBUG(out.len != 0);
+  char *ptr = (char *)tl_alloc_tmp(out.len);
+  memcpy(ptr, a.ptr, out.len);
+  out.ptr = (char const *)ptr;
   return out;
 }
 
@@ -431,6 +445,19 @@ static void dump_file(char const *path, void const *data, size_t size) {
   ASSERT_ALWAYS(file);
   fwrite(data, 1, size, file);
   fclose(file);
+}
+
+static char *read_file_tmp(char const *filename) {
+  FILE *text_file = fopen(filename, "rb");
+  ASSERT_ALWAYS(text_file);
+  fseek(text_file, 0, SEEK_END);
+  long fsize = ftell(text_file);
+  fseek(text_file, 0, SEEK_SET);
+  size_t size = (size_t)fsize;
+  char * data = (char *)tl_alloc_tmp((size_t)fsize);
+  fread(data, 1, (size_t)fsize, text_file);
+  fclose(text_file);
+  return data;
 }
 
 static void ATTR_USED write_image_2d_i32_ppm(const char *file_name, void *data, uint32_t pitch,
