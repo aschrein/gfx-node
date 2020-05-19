@@ -1,6 +1,45 @@
 #include "node_editor.h"
 #include "script.hpp"
 #include "simplefont.h"
+#include "nodes.hpp"
+
+static u16 f32_to_u16(f32 x) { return (u16)(clamp(x, 0.0f, 1.0f) * ((1 << 16) - 1)); }
+
+float3 parse_color_float3(char const *str) {
+  ASSERT_ALWAYS(str[0] == '#');
+  auto hex_to_decimal = [](char c) {
+    if (c >= '0' && c <= '9') {
+      return (u32)c - (u32)'0';
+    } else if (c >= 'a' && c <= 'f') {
+      return 10 + (u32)c - (u32)'a';
+    } else if (c >= 'A' && c <= 'F') {
+      return 10 + (u32)c - (u32)'A';
+    }
+    UNIMPLEMENTED;
+  };
+  u32 r = hex_to_decimal(str[1]) * 16 + hex_to_decimal(str[2]);
+  u32 g = hex_to_decimal(str[3]) * 16 + hex_to_decimal(str[4]);
+  u32 b = hex_to_decimal(str[5]) * 16 + hex_to_decimal(str[6]);
+  return (float3){(f32)r / 255.0f, (f32)g / 255.0f, (f32)b / 255.0f};
+}
+
+u32 parse_color_u32(char const *str) {
+  ASSERT_ALWAYS(str[0] == '#');
+  auto hex_to_decimal = [](char c) {
+    if (c >= '0' && c <= '9') {
+      return (u32)c - (u32)'0';
+    } else if (c >= 'a' && c <= 'f') {
+      return 10 + (u32)c - (u32)'a';
+    } else if (c >= 'A' && c <= 'F') {
+      return 10 + (u32)c - (u32)'A';
+    }
+    UNIMPLEMENTED;
+  };
+  u32 r = hex_to_decimal(str[1]) * 16 + hex_to_decimal(str[2]);
+  u32 g = hex_to_decimal(str[3]) * 16 + hex_to_decimal(str[4]);
+  u32 b = hex_to_decimal(str[5]) * 16 + hex_to_decimal(str[6]);
+  return r | (g << 8) | (b << 16);
+}
 
 struct _String2D {
   char *   c_str;
@@ -98,11 +137,12 @@ struct SourceDB {
 };
 
 struct _Scene : public Scene {
-  SourceDB sourcedb;
-  void     new_frame() { sourcedb.rebuild_index(); }
-  void     init() { sourcedb.init(); }
-  void     release() { sourcedb.release(); }
-  void     reset() {
+  SourceDB    sourcedb;
+  Array<Node> nodes;
+  void        new_frame() { sourcedb.rebuild_index(); }
+  void        init() { sourcedb.init(); }
+  void        release() { sourcedb.release(); }
+  void        reset() {
     release();
     init();
   }
@@ -120,11 +160,197 @@ struct _Scene : public Scene {
   void add_source(char const *name, char const *text) {
     sourcedb.add_source(stref_s(name), stref_s(text));
   }
+  u32 add_node(char const *name, char const *type, float x, float y, float size_x, float size_y) {
+    Node node;
+    // truncate to sizeof(node.name)
+    memcpy(node.name, name, sizeof(node.name));
+    node.name[sizeof(node.name) - 1] = '\0';
+    node.type                        = str_to_node_type(stref_s(type));
+    node.pos.x                       = x;
+    node.pos.y                       = y;
+    node.size.x                      = size_x;
+    node.size.y                      = size_y;
+    node.id                          = nodes.size + 1;
+    nodes.push(node);
+    return node.id;
+  }
+  void get_nodes(Node **pnodes, u32 *count) {
+    *pnodes = nodes.ptr;
+    *count  = nodes.size;
+  }
+  void consume_event(SDL_Event event) {
+    float        camera_speed      = 1.0f;
+    static bool  ldown             = false;
+    static int   old_mp_x          = 0;
+    static int   old_mp_y          = 0;
+    static bool  hyper_pressed     = false;
+    static bool  skip_key          = false;
+    static bool  lctrl             = false;
+    static float old_mouse_world_x = 0.0f;
+    static float old_mouse_world_y = 0.0f;
+    static i32   selected_node     = -1;
+    switch (event.type) {
+    case SDL_QUIT: {
+      break;
+    }
+    case SDL_KEYUP: {
+      if (event.key.keysym.sym == SDLK_LCTRL) {
+        lctrl = false;
+      }
+      break;
+    }
+    case SDL_TEXTINPUT: {
+    } break;
+    case SDL_KEYDOWN: {
+      uint32_t c = event.key.keysym.sym;
+      switch (event.key.keysym.sym) {
+
+      case SDLK_ESCAPE: {
+        break;
+      }
+      }
+      break;
+    }
+    case SDL_MOUSEBUTTONDOWN: {
+      SDL_MouseButtonEvent *m = (SDL_MouseButtonEvent *)&event;
+      if (m->button == 3) {
+      }
+      if (m->button == 1) {
+        ldown = true;
+      }
+      ito(nodes.size) {
+        Node &node = nodes[i];
+        if (node.inside(c2d.camera.mouse_world_x, c2d.camera.mouse_world_y)) {
+          selected_node = i;
+          return;
+        }
+      }
+      selected_node = -1;
+      if (c2d.hovered) c2d.consume_event(event);
+      break;
+    }
+    case SDL_MOUSEBUTTONUP: {
+      SDL_MouseButtonEvent *m = (SDL_MouseButtonEvent *)&event;
+      selected_node           = -1;
+      if (m->button == 1) ldown = false;
+      if (c2d.hovered) c2d.consume_event(event);
+      break;
+    }
+    case SDL_WINDOWEVENT_FOCUS_LOST: {
+      skip_key      = false;
+      hyper_pressed = false;
+      ldown         = false;
+      lctrl         = false;
+      if (c2d.hovered) c2d.consume_event(event);
+      break;
+    }
+    case SDL_MOUSEMOTION: {
+      SDL_MouseMotionEvent *m = (SDL_MouseMotionEvent *)&event;
+      if (c2d.hovered) c2d.consume_event(event);
+      int    dx = m->x - old_mp_x;
+      int    dy = m->y - old_mp_y;
+      float2 wd = c2d.camera.window_to_world({m->x, m->y}) -
+                  c2d.camera.window_to_world({old_mp_x, old_mp_y});
+      old_mp_x          = m->x;
+      old_mp_y          = m->y;
+      float wmdx        = c2d.camera.mouse_world_x - old_mouse_world_x;
+      float wmdy        = c2d.camera.mouse_world_y - old_mouse_world_y;
+      old_mouse_world_x = c2d.camera.mouse_world_x;
+      old_mouse_world_y = c2d.camera.mouse_world_y;
+
+      if (ldown && selected_node >= 0) {
+        Node &node = nodes[selected_node];
+        node.pos.x += wmdx; // c2d.camera.pos.z * (float)dx / c2d.camera.viewport_height;
+        node.pos.y += wmdy; // c2d.camera.pos.z * (float)dy / c2d.camera.viewport_height;
+      }
+
+    } break;
+    case SDL_MOUSEWHEEL: {
+      if (c2d.hovered) c2d.consume_event(event);
+    } break;
+    }
+  }
 };
 
+void Scene::draw() {
+  _Scene *scene = (_Scene *)this;
+  scene->new_frame();
+  line_storage.enter_scope();
+  quad_storage.enter_scope();
+  string_storage.enter_scope();
+  char_storage.enter_scope();
+  ts.enter_scope();
+  c2d.imcanvas_start();
+  defer({
+    c2d.imcanvas_end();
+    ts.exit_scope();
+  });
+  u32    W             = 256;
+  u32    H             = 256;
+  float  dx            = 1.0f;
+  float  dy            = 1.0f;
+  float  size_x        = 256.0f;
+  float  size_y        = 256.0f;
+  float  QUAD_LAYER    = 1.0f / 256.0f;
+  float  GRID_LAYER    = 2.0f / 256.0f;
+  float  NODE_BG_LAYER = 10.0f / 256.0f;
+  float  TEXT_LAYER    = 30.0f / 256.0f;
+  float3 grid_color    = parse_color_float3(dark_mode::g_grid_color);
+  c2d.draw_string({//
+                   .c_str = "hello world!",
+                   .x     = c2d.camera.mouse_world_x,
+                   .y     = c2d.camera.mouse_world_y,
+                   .z     = GRID_LAYER,
+                   .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
+  c2d.draw_rect({//
+                 .x      = c2d.camera.mouse_world_x,
+                 .y      = c2d.camera.mouse_world_y,
+                 .z      = GRID_LAYER,
+                 .width  = 1.0f,
+                 .height = 1.0f,
+
+                 .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
+  ito(W + 1) {
+    c2d.draw_line({//
+                   .x0    = dx * (float)(i),
+                   .y0    = 0.0f,
+                   .x1    = dx * (float)(i),
+                   .y1    = size_y,
+                   .z     = GRID_LAYER,
+                   .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
+  }
+  ito(H + 1) {
+    c2d.draw_line({//
+                   .x0    = 0.0f,
+                   .y0    = dy * (float)(i),
+                   .x1    = size_x,
+                   .y1    = dy * (float)(i),
+                   .z     = GRID_LAYER,
+                   .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
+  }
+  ito(scene->nodes.size) {
+    Node &node = scene->nodes[i];
+    c2d.draw_rect({//
+                   .x      = node.pos.x - node.size.x,
+                   .y      = node.pos.y - node.size.y,
+                   .z      = NODE_BG_LAYER,
+                   .width  = node.size.x * 2.0f,
+                   .height = node.size.y * 2.0f,
+                   .color  = {.r = 0.5f, .g = 0.5f, .b = 0.5f}});
+  }
+}
+
+u32 Scene::add_node(char const *name, char const *type, float x, float y, float size_x, float size_y) {
+  _Scene *scene = (_Scene *)this;
+  return scene->add_node(name, type, x, y, size_x, size_y);
+}
 void Scene::get_source_list(char const ***ptr, u32 *count) {
   _Scene *scene = (_Scene *)this;
   scene->get_source_list(ptr, count);
+}
+void Scene::get_node_type_list(char const ***ptr, u32 *count) {
+  *ptr   = Node_Type_Name_Table;
+  *count = ARRAY_SIZE(Node_Type_Name_Table) - 1;
 }
 char const *Scene::get_source(char const *name) {
   _Scene *scene = (_Scene *)this;
@@ -156,61 +382,6 @@ static int _init_ = [] {
 
 Scene *Scene::get_scene() { return &g_scene; }
 
-static u16 f32_to_u16(f32 x) { return (u16)(clamp(x, 0.0f, 1.0f) * ((1 << 16) - 1)); }
-
-float3 parse_color_float3(char const *str) {
-  ASSERT_ALWAYS(str[0] == '#');
-  auto hex_to_decimal = [](char c) {
-    if (c >= '0' && c <= '9') {
-      return (u32)c - (u32)'0';
-    } else if (c >= 'a' && c <= 'f') {
-      return 10 + (u32)c - (u32)'a';
-    } else if (c >= 'A' && c <= 'F') {
-      return 10 + (u32)c - (u32)'A';
-    }
-    UNIMPLEMENTED;
-  };
-  u32 r = hex_to_decimal(str[1]) * 16 + hex_to_decimal(str[2]);
-  u32 g = hex_to_decimal(str[3]) * 16 + hex_to_decimal(str[4]);
-  u32 b = hex_to_decimal(str[5]) * 16 + hex_to_decimal(str[6]);
-  return (float3){(f32)r / 255.0f, (f32)g / 255.0f, (f32)b / 255.0f};
-}
-
-u32 parse_color_u32(char const *str) {
-  ASSERT_ALWAYS(str[0] == '#');
-  auto hex_to_decimal = [](char c) {
-    if (c >= '0' && c <= '9') {
-      return (u32)c - (u32)'0';
-    } else if (c >= 'a' && c <= 'f') {
-      return 10 + (u32)c - (u32)'a';
-    } else if (c >= 'A' && c <= 'F') {
-      return 10 + (u32)c - (u32)'A';
-    }
-    UNIMPLEMENTED;
-  };
-  u32 r = hex_to_decimal(str[1]) * 16 + hex_to_decimal(str[2]);
-  u32 g = hex_to_decimal(str[3]) * 16 + hex_to_decimal(str[4]);
-  u32 b = hex_to_decimal(str[5]) * 16 + hex_to_decimal(str[6]);
-  return r | (g << 8) | (b << 16);
-}
-
-// namespace Visual {
-// struct Node {
-////
-//// +-------+ ^
-//// |       | |
-//// |   +   | | size.y * 2
-//// |   pos | |
-//// +-------+ V
-//// <------->
-////   size.x * 2
-////
-//  char name[0x10];
-//  float2 pos;
-//  float2 size;
-
-//};
-//}
 void Context2D::flush_rendering() {
   render_stuff();
   line_storage.exit_scope();
@@ -257,13 +428,10 @@ void Oth_Camera::update(u32 viewport_x, u32 viewport_y, u32 viewport_width, u32 
       };
   // clang-format on
   memcpy(&this->proj[0], &proj[0], sizeof(proj));
-  float2 mwp    = screen_to_world((float2){mouse_screen_x, mouse_screen_y});
-  mouse_world_x = mwp.x;
-  mouse_world_y = mwp.y;
-  world_min_x   = screen_to_world((float2){-1.0f, -1.0f}).x;
-  world_min_y   = screen_to_world((float2){-1.0f, -1.0f}).y;
-  world_max_x   = screen_to_world((float2){1.0f, 1.0f}).x;
-  world_max_y   = screen_to_world((float2){1.0f, 1.0f}).y;
+  world_min_x = screen_to_world(float2{-1.0f, -1.0f}).x;
+  world_min_y = screen_to_world(float2{-1.0f, -1.0f}).y;
+  world_max_x = screen_to_world(float2{1.0f, 1.0f}).x;
+  world_max_y = screen_to_world(float2{1.0f, 1.0f}).y;
   glyphs_world_height =
       glyph_scale * (float)(simplefont_bitmap_glyphs_height) / viewport_height * pos.z;
   glyphs_world_width =
@@ -392,92 +560,34 @@ void Oth_Camera::consume_event(SDL_Event event) {
     }
     mouse_screen_x = 2.0f * (float(m->x - viewport_x) + 0.5f) / viewport_width - 1.0f;
     mouse_screen_y = -2.0f * (float(m->y - viewport_y) - 0.5f) / viewport_height + 1.0f;
-
-    old_mp_x = m->x;
-    old_mp_y = m->y;
+    float2 mwp     = screen_to_world(float2{mouse_screen_x, mouse_screen_y});
+    mouse_world_x  = mwp.x;
+    mouse_world_y  = mwp.y;
+    old_mp_x       = m->x;
+    old_mp_y       = m->y;
   } break;
   case SDL_MOUSEWHEEL: {
     float dz = pos.z * (float)(event.wheel.y > 0 ? 1 : -1) * 2.0e-1;
-//    fprintf(stdout, "dz: %f\n", dz);
-    pos.x += -0.5f * dz * (window_to_screen((int2){(int32_t)old_mp_x, 0}).x);
-    pos.y += -0.5f * dz * (window_to_screen((int2){0, (int32_t)old_mp_y}).y);
+    //    fprintf(stdout, "dz: %f\n", dz);
     pos.z += dz;
     pos.z = clamp(pos.z, 0.1f, 512.0f);
+    pos.x += -0.5f * dz * (window_to_screen(int2{(int32_t)old_mp_x, 0}).x);
+    pos.y += -0.5f * dz * (window_to_screen(int2{0, (int32_t)old_mp_y}).y);
+
   } break;
   }
 }
 
 void Context2D::consume_event(SDL_Event event) { camera.consume_event(event); }
 
+void Scene::get_nodes(Node **pnodes, u32 *count) {
+  _Scene *scene = (_Scene *)this;
+  scene->get_nodes(pnodes, count);
+}
+
 void Scene::consume_event(SDL_Event event) {
-  float       camera_speed  = 1.0f;
-  static bool ldown         = false;
-  static int  old_mp_x      = 0;
-  static int  old_mp_y      = 0;
-  static bool hyper_pressed = false;
-  static bool skip_key      = false;
-  static bool lctrl         = false;
-  switch (event.type) {
-  case SDL_QUIT: {
-    break;
-  }
-  case SDL_KEYUP: {
-    if (event.key.keysym.sym == SDLK_LCTRL) {
-      lctrl = false;
-    }
-    break;
-  }
-  case SDL_TEXTINPUT: {
-  } break;
-  case SDL_KEYDOWN: {
-    uint32_t c = event.key.keysym.sym;
-    switch (event.key.keysym.sym) {
-
-    case SDLK_ESCAPE: {
-      break;
-    }
-    }
-    break;
-  }
-  case SDL_MOUSEBUTTONDOWN: {
-    SDL_MouseButtonEvent *m = (SDL_MouseButtonEvent *)&event;
-    if (m->button == 3) {
-    }
-    if (m->button == 1) {
-
-      ldown = true;
-    }
-    if (c2d.hovered) c2d.consume_event(event);
-    break;
-  }
-  case SDL_MOUSEBUTTONUP: {
-    SDL_MouseButtonEvent *m = (SDL_MouseButtonEvent *)&event;
-    if (m->button == 1) ldown = false;
-    if (c2d.hovered) c2d.consume_event(event);
-    break;
-  }
-  case SDL_WINDOWEVENT_FOCUS_LOST: {
-    skip_key      = false;
-    hyper_pressed = false;
-    ldown         = false;
-    lctrl         = false;
-    if (c2d.hovered) c2d.consume_event(event);
-    break;
-  }
-  case SDL_MOUSEMOTION: {
-    SDL_MouseMotionEvent *m = (SDL_MouseMotionEvent *)&event;
-
-    int dx = m->x - old_mp_x;
-    int dy = m->y - old_mp_y;
-
-    old_mp_x = m->x;
-    old_mp_y = m->y;
-    if (c2d.hovered) c2d.consume_event(event);
-  } break;
-  case SDL_MOUSEWHEEL: {
-    if (c2d.hovered) c2d.consume_event(event);
-  } break;
-  }
+  _Scene *scene = (_Scene *)this;
+  scene->consume_event(event);
 }
 
 void Context2D::render_stuff() {
@@ -746,10 +856,10 @@ void Context2D::render_stuff() {
       color = instance_color;
       uv = instance_uv_offset + (vertex_position * vec2(1.0, -1.0) + vec2(0.0, 1.0)) * glyph_uv_size;
       vec4 sspos =  vec4(vertex_position * glyph_size + instance_offset.xy, 0.0, 1.0);
-      int pixel_x = int(viewport_size.x * (sspos.x * 0.5 + 0.5) + 0.5);
-      int pixel_y = int(viewport_size.y * (sspos.y * 0.5 + 0.5) + 0.5);
-      sspos.x = 2.0 * float(pixel_x) / viewport_size.x - 1.0;
-      sspos.y = 2.0 * float(pixel_y) / viewport_size.y - 1.0;
+      int pixel_x = int(viewport_size.x * (sspos.x * 0.5 + 0.5));
+      int pixel_y = int(viewport_size.y * (sspos.y * 0.5 + 0.5));
+      sspos.x = 2.0 * (float(pixel_x)) / viewport_size.x - 1.0;
+      sspos.y = 2.0 * (float(pixel_y)) / viewport_size.y - 1.0;
       sspos.z = instance_offset.z;
       gl_Position = sspos;
 
@@ -1033,74 +1143,6 @@ void redraw() {
   glDrawArrays(GL_TRIANGLES, 0, 3);
   glDeleteProgram(program);
   glDeleteVertexArrays(1, &vao);
-}
-
-void Scene::draw() {
-  _Scene *scene = (_Scene *)this;
-  scene->new_frame();
-  line_storage.enter_scope();
-  quad_storage.enter_scope();
-  string_storage.enter_scope();
-  char_storage.enter_scope();
-  ts.enter_scope();
-  c2d.imcanvas_start();
-  defer({
-    c2d.imcanvas_end();
-    ts.exit_scope();
-  });
-  u32    W             = 256;
-  u32    H             = 256;
-  float  dx            = 1.0f;
-  float  dy            = 1.0f;
-  float  size_x        = 256.0f;
-  float  size_y        = 256.0f;
-  float  QUAD_LAYER    = 1.0f / 256.0f;
-  float  GRID_LAYER    = 2.0f / 256.0f;
-  float  NODE_BG_LAYER = 10.0f / 256.0f;
-  float  TEXT_LAYER    = 30.0f / 256.0f;
-  float3 grid_color    = parse_color_float3(dark_mode::g_grid_color);
-  c2d.draw_string({//
-                   .c_str = "hello world!",
-                   .x     = c2d.camera.mouse_world_x,
-                   .y     = c2d.camera.mouse_world_y,
-                   .z     = GRID_LAYER,
-                   .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
-  c2d.draw_rect({//
-                 .x      = c2d.camera.mouse_world_x,
-                 .y      = c2d.camera.mouse_world_y,
-                 .z      = GRID_LAYER,
-                 .width  = 1.0f,
-                 .height = 1.0f,
-
-                 .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
-  ito(W + 1) {
-    c2d.draw_line({//
-                   .x0    = dx * (float)(i),
-                   .y0    = 0.0f,
-                   .x1    = dx * (float)(i),
-                   .y1    = size_y,
-                   .z     = GRID_LAYER,
-                   .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
-  }
-  ito(H + 1) {
-    c2d.draw_line({//
-                   .x0    = 0.0f,
-                   .y0    = dy * (float)(i),
-                   .x1    = size_x,
-                   .y1    = dy * (float)(i),
-                   .z     = GRID_LAYER,
-                   .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
-  }
-  //  ito(nodes.size) {
-  //    Node &node = nodes.ptr[i];
-  //    c2d.draw_rect({//
-  //                   .x      = node.pos.x - node.size.x,
-  //                   .y      = node.pos.y - node.size.y,
-  //                   .z      = NODE_BG_LAYER,
-  //                   .width  = node.size.x,
-  //                   .height = node.size.y,
-  //                   .color = {.r = 0.5f, .g = 0.5f, .b = 0.5f}});
-  //  }
 }
 
 // struct Console {

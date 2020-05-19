@@ -69,8 +69,8 @@ struct Oth_Camera {
   float2 window_to_world(int2 p) {
     return screen_to_world((float2){
         //
-        2.0f * (float)(p.x - viewport_x) / viewport_width - 1.0f,
-        -2.0f * (float)(p.y - viewport_y) / viewport_height + 1.0f,
+        2.0f * ((float)(p.x - viewport_x) + 0.5f) / viewport_width - 1.0f,
+        -2.0f * ((float)(p.y - viewport_y) - 0.5f) / viewport_height + 1.0f,
     });
   }
   float2 window_to_screen(int2 p) {
@@ -149,22 +149,26 @@ struct Context2D {
   void consume_event(SDL_Event event);
 };
 
+struct Node;
+
 struct Scene {
   Context2D c2d;
-  u32       add_node(char const *name);
+  u32       add_node(char const *name, char const *type, float x, float y, float size_x, float size_y);
   void      draw();
   void      consume_event(SDL_Event event);
   // called per frame
   void get_source_list(char const ***ptr, u32 *count);
+  void get_node_type_list(char const ***ptr, u32 *count);
   // return long-lived reference
   char const *get_source(char const *name);
   // new_src: short-lived reference
-  void          set_source(char const * name, char const * new_src);
-  void          remove_source(char const * name);
-  void          add_source(char const * name, char const * text);
+  void          set_source(char const *name, char const *new_src);
+  void          remove_source(char const *name);
+  void          add_source(char const *name, char const *text);
   void          reset();
-  void init_from_json(char const *str);
-  string_ref to_json_tmp();
+  void          get_nodes(Node **pnodes, u32 *count);
+  void          init_from_json(char const *str);
+  string_ref    to_json_tmp();
   static Scene *get_scene();
 };
 

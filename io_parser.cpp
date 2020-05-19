@@ -1,6 +1,6 @@
-#include <json.hpp>
-
 #include "node_editor.h"
+#include "nodes.hpp"
+#include <json.hpp>
 
 void Scene::init_from_json(char const *str) {
   using json  = nlohmann::json;
@@ -16,6 +16,15 @@ void Scene::init_from_json(char const *str) {
   ASSERT_DEBUG(links.is_array());
   ASSERT_DEBUG(payload.is_object());
   ASSERT_DEBUG(camera.is_object());
+  for (auto &item : nodes) {
+    add_node(item.at("name").get<std::string>().c_str(), //
+             item.at("type").get<std::string>().c_str(), //
+             item.at("x").get<float>(),                  //
+             item.at("y").get<float>(),                  //
+             item.at("size_x").get<float>(),             //
+             item.at("size_y").get<float>()              //
+    );
+  }
   c2d.camera.pos.x = camera.at("x").get<float>();
   c2d.camera.pos.y = camera.at("y").get<float>();
   c2d.camera.pos.z = camera.at("z").get<float>();
@@ -39,14 +48,32 @@ string_ref Scene::to_json_tmp() {
   root["camera"]["y"]     = c2d.camera.pos.y;
   root["camera"]["z"]     = c2d.camera.pos.z;
   root["payload"]["srcs"] = json::array();
-  char const **src_names  = NULL;
-  u32          src_count  = 0;
-  get_source_list(&src_names, &src_count);
-  ito(src_count) {
-    auto item = json::array();
-    item.push_back(std::string(src_names[i]));
-    item.push_back(std::string(get_source(src_names[i])));
-    root["payload"]["srcs"].push_back(item);
+  {
+    char const **src_names = NULL;
+    u32          src_count = 0;
+    get_source_list(&src_names, &src_count);
+    ito(src_count) {
+      auto item = json::array();
+      item.push_back(std::string(src_names[i]));
+      item.push_back(std::string(get_source(src_names[i])));
+      root["payload"]["srcs"].push_back(item);
+    }
+  }
+  {
+    Node *nodes      = NULL;
+    u32   node_count = 0;
+    get_nodes(&nodes, &node_count);
+    ito(node_count) {
+      Node &node          = nodes[i];
+      auto  node_json     = json::object();
+      node_json["x"]      = node.pos.x;
+      node_json["y"]      = node.pos.y;
+      node_json["size_x"] = node.size.y;
+      node_json["size_y"] = node.size.x;
+      node_json["name"]   = std::string(node.name);
+      node_json["type"]   = std::string(node_type_to_str(node.type));
+      root["nodes"].push_back(node_json);
+    }
   }
   std::string str = root.dump();
   char *      ptr = (char *)tl_alloc_tmp(str.size());

@@ -19,8 +19,8 @@ void MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLs
 #endif
 void dump_scene() {
   TMP_STORAGE_SCOPE;
-      string_ref dump = Scene::get_scene()->to_json_tmp();
-      dump_file("scene.json", dump.ptr, dump.len);
+  string_ref dump = Scene::get_scene()->to_json_tmp();
+  dump_file("scene.json", dump.ptr, dump.len);
 }
 static int quit_loop = 0;
 
@@ -66,38 +66,54 @@ void Context2D::imcanvas_start() {
   screen_width  = SCREEN_WIDTH;
   hovered       = ImGui::IsWindowHovered();
 
-  static int  selected_fish = -1;
-  const char *names[]       = {"Bream", "Haddock", "Mackerel", "Pollock", "Tilefish"};
-  static bool toggles[]     = {true, false, false, false, false};
+  //  static int  selected_fish = -1;
+  //  const char *names[]       = {"Bream", "Haddock", "Mackerel", "Pollock", "Tilefish"};
+  //  static bool toggles[]     = {true, false, false, false, false};
 
   if (ImGui::BeginPopupContextWindow()) {
-    for (int i = 0; i < IM_ARRAYSIZE(names); i++) ImGui::MenuItem(names[i], "", &toggles[i]);
-    if (ImGui::BeginMenu("Sub-menu")) {
-      ImGui::MenuItem("Click me");
-      ImGui::EndMenu();
+    //    for (int i = 0; i < IM_ARRAYSIZE(names); i++) ImGui::MenuItem(names[i], "", &toggles[i]);
+    //    if (ImGui::BeginMenu("Sub-menu")) {
+    //      ImGui::MenuItem("Click me");
+    //      ImGui::EndMenu();
+    //    }
+    if (ImGui::Button("Add node")) ImGui::OpenPopup("add_node_popup");
+    {
+      if (ImGui::BeginPopup("add_node_popup")) {
+        char const **ptr   = NULL;
+        u32          count = 0;
+        Scene::get_scene()->get_node_type_list(&ptr, &count);
+        ito(count) {
+          if (ImGui::MenuItem(ptr[i])) {
+            Scene::get_scene()->add_node("new node #", ptr[i],
+                                         Scene::get_scene()->c2d.camera.mouse_world_x,
+                                         Scene::get_scene()->c2d.camera.mouse_world_y, 1.0f, 1.0f);
+          }
+        }
+        ImGui::EndPopup();
+      }
     }
-    if (ImGui::Button("Dump scene")) {
+    if (ImGui::Button("Save scene")) {
       dump_scene();
     }
     if (ImGui::Button("Exit")) std::exit(0);
-    ImGui::Separator();
-    ImGui::Text("Tooltip here");
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("I am a tooltip over a popup");
+    // ImGui::Separator();
+    //    ImGui::Text("Tooltip here");
+    //    if (ImGui::IsItemHovered()) ImGui::SetTooltip("I am a tooltip over a popup");
 
-    if (ImGui::Button("Stacked Popup")) ImGui::OpenPopup("another popup");
-    if (ImGui::BeginPopup("another popup")) {
-      for (int i = 0; i < IM_ARRAYSIZE(names); i++) ImGui::MenuItem(names[i], "", &toggles[i]);
-      if (ImGui::BeginMenu("Sub-menu")) {
-        ImGui::MenuItem("Click me");
-        if (ImGui::Button("Stacked Popup")) ImGui::OpenPopup("another popup");
-        if (ImGui::BeginPopup("another popup")) {
-          ImGui::Text("I am the last one here.");
-          ImGui::EndPopup();
-        }
-        ImGui::EndMenu();
-      }
-      ImGui::EndPopup();
-    }
+    //    if (ImGui::Button("Stacked Popup")) ImGui::OpenPopup("another popup");
+    //    if (ImGui::BeginPopup("another popup")) {
+    //      for (int i = 0; i < IM_ARRAYSIZE(names); i++) ImGui::MenuItem(names[i], "",
+    //      &toggles[i]); if (ImGui::BeginMenu("Sub-menu")) {
+    //        ImGui::MenuItem("Click me");
+    //        if (ImGui::Button("Stacked Popup")) ImGui::OpenPopup("another popup");
+    //        if (ImGui::BeginPopup("another popup")) {
+    //          ImGui::Text("I am the last one here.");
+    //          ImGui::EndPopup();
+    //        }
+    //        ImGui::EndMenu();
+    //      }
+    //      ImGui::EndPopup();
+    //    }
     ImGui::EndPopup();
   }
   //  if (ImGui::IsWindowHovered()) {
@@ -187,7 +203,7 @@ int main_tick() {
     ImGui::End();
     Scene::get_scene()->draw();
     ImGui::Begin("Scene");
-    if (ImGui::Button("Dump")) {
+    if (ImGui::Button("Save scene")) {
       dump_scene();
     }
     ImGui::End();
@@ -356,11 +372,15 @@ void main_loop() {
 }
 
 int main() {
+#if __EMSCRIPTEN__
+#else
   {
     tl_alloc_tmp_enter();
     defer(tl_alloc_tmp_exit());
     Scene::get_scene()->init_from_json(read_file_tmp("scene.json"));
   }
+#endif
+
   //  Scene::get_scene()->add_source("test",
   //                                 R"(#version 300 es
   //  precision highp float;

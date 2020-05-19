@@ -23,7 +23,7 @@
   } while (0)
 #define ASSERT_DEBUG(x) ASSERT_ALWAYS(x)
 #define NOTNULL(x) ASSERT_ALWAYS((x) != NULL)
-
+#define ARRAY_SIZE(_ARR) ((int)(sizeof(_ARR) / sizeof(*_ARR)))
 #define DLL_EXPORT __attribute__((visibility("default")))
 #define ATTR_USED __attribute__((used))
 
