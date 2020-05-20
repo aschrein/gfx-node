@@ -19,8 +19,8 @@ void MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLs
 #endif
 void dump_scene() {
   TMP_STORAGE_SCOPE;
-  string_ref dump = Scene::get_scene()->to_json_tmp();
-  dump_file("scene.json", dump.ptr, dump.len);
+  string_ref dump = Scene::get_scene()->get_save_script();
+  dump_file("scene.lsp", dump.ptr, dump.len);
 }
 static int quit_loop = 0;
 
@@ -146,6 +146,147 @@ void Context2D::imcanvas_start() {
 }
 void Context2D::imcanvas_end() { ImGui::End(); }
 
+// Usage:
+//  static ExampleAppLog my_log;
+//  my_log.AddLog("Hello %d world\n", 123);
+//  my_log.Draw("title");
+struct ExampleAppLog {
+  ImGuiTextBuffer Buf;
+  ImGuiTextFilter Filter;
+  ImVector<int>   LineOffsets; // Index to lines offset. We maintain this with AddLog() calls.
+  bool            AutoScroll;  // Keep scrolling if already at the bottom.
+
+  ExampleAppLog() {
+    AutoScroll = true;
+    Clear();
+  }
+
+  void Clear() {
+    Buf.clear();
+    LineOffsets.clear();
+    LineOffsets.push_back(0);
+  }
+
+  void AddLog(const char *fmt, ...) IM_FMTARGS(2) {
+    int     old_size = Buf.size();
+    va_list args;
+    va_start(args, fmt);
+    Buf.appendfv(fmt, args);
+    va_end(args);
+    for (int new_size = Buf.size(); old_size < new_size; old_size++)
+      if (Buf[old_size] == '\n') LineOffsets.push_back(old_size + 1);
+  }
+
+  void AddLog(const char *fmt, va_list args) {
+    int old_size = Buf.size();
+    Buf.appendfv(fmt, args);
+    for (int new_size = Buf.size(); old_size < new_size; old_size++)
+      if (Buf[old_size] == '\n') LineOffsets.push_back(old_size + 1);
+  }
+
+  void Draw(const char *title, bool *p_open = NULL) {
+    if (!ImGui::Begin(title, p_open)) {
+      ImGui::End();
+      return;
+    }
+
+    // Options menu
+    if (ImGui::BeginPopup("Options")) {
+      ImGui::Checkbox("Auto-scroll", &AutoScroll);
+      ImGui::EndPopup();
+    }
+
+    // Main window
+    if (ImGui::Button("Options")) ImGui::OpenPopup("Options");
+    ImGui::SameLine();
+    bool clear = ImGui::Button("Clear");
+    ImGui::SameLine();
+    bool copy = ImGui::Button("Copy");
+    ImGui::SameLine();
+    Filter.Draw("Filter", -100.0f);
+
+    ImGui::Separator();
+    ImGui::BeginChild("scrolling", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+
+    if (clear) Clear();
+    if (copy) ImGui::LogToClipboard();
+
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+    const char *buf     = Buf.begin();
+    const char *buf_end = Buf.end();
+    if (Filter.IsActive()) {
+      // In this example we don't use the clipper when Filter is enabled.
+      // This is because we don't have a random access on the result on our filter.
+      // A real application processing logs with ten of thousands of entries may want to store the
+      // result of search/filter.. especially if the filtering function is not trivial (e.g.
+      // reg-exp).
+      for (int line_no = 0; line_no < LineOffsets.Size; line_no++) {
+        const char *line_start = buf + LineOffsets[line_no];
+        const char *line_end =
+            (line_no + 1 < LineOffsets.Size) ? (buf + LineOffsets[line_no + 1] - 1) : buf_end;
+        if (Filter.PassFilter(line_start, line_end)) ImGui::TextUnformatted(line_start, line_end);
+      }
+    } else {
+      // The simplest and easy way to display the entire buffer:
+      //   ImGui::TextUnformatted(buf_begin, buf_end);
+      // And it'll just work. TextUnformatted() has specialization for large blob of text and will
+      // fast-forward to skip non-visible lines. Here we instead demonstrate using the clipper to
+      // only process lines that are within the visible area. If you have tens of thousands of items
+      // and their processing cost is non-negligible, coarse clipping them on your side is
+      // recommended. Using ImGuiListClipper requires
+      // - A) random access into your data
+      // - B) items all being the  same height,
+      // both of which we can handle since we an array pointing to the beginning of each line of
+      // text. When using the filter (in the block of code above) we don't have random access into
+      // the data to display anymore, which is why we don't use the clipper. Storing or skimming
+      // through the search result would make it possible (and would be recommended if you want to
+      // search through tens of thousands of entries).
+      ImGuiListClipper clipper;
+      clipper.Begin(LineOffsets.Size);
+      while (clipper.Step()) {
+        for (int line_no = clipper.DisplayStart; line_no < clipper.DisplayEnd; line_no++) {
+          const char *line_start = buf + LineOffsets[line_no];
+          const char *line_end =
+              (line_no + 1 < LineOffsets.Size) ? (buf + LineOffsets[line_no + 1] - 1) : buf_end;
+          ImGui::TextUnformatted(line_start, line_end);
+        }
+      }
+      clipper.End();
+    }
+    ImGui::PopStyleVar();
+
+    if (AutoScroll && ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) ImGui::SetScrollHereY(1.0f);
+
+    ImGui::EndChild();
+    ImGui::End();
+  }
+};
+ExampleAppLog debug_log;
+void          Scene::push_warning(char const *fmt, ...) {
+  debug_log.AddLog("[WARNING] ");
+  va_list args;
+  va_start(args, fmt);
+  debug_log.AddLog(fmt, args);
+  va_end(args);
+  debug_log.AddLog("\n");
+}
+void Scene::push_debug_message(char const *fmt, ...) {
+  debug_log.AddLog("[DEBUG] ");
+  va_list args;
+  va_start(args, fmt);
+  debug_log.AddLog(fmt, args);
+  va_end(args);
+  debug_log.AddLog("\n");
+}
+void Scene::push_error(char const *fmt, ...) {
+  debug_log.AddLog("[ERROR] ");
+  va_list args;
+  va_start(args, fmt);
+  debug_log.AddLog(fmt, args);
+  va_end(args);
+  debug_log.AddLog("\n");
+}
+TextEditor editor;
 #if __EMSCRIPTEN__
 void main_tick() {
 #else
@@ -160,9 +301,7 @@ int main_tick() {
     ImGui_ImplSDL2_ProcessEvent(&event);
     Scene::get_scene()->consume_event(event);
   };
-  static TextEditor editor;
-  TextEditor::LanguageDefinition::CPlusPlus();
-  editor.SetPalette(TextEditor::GetRetroBluePalette());
+
   auto poll_events = [&]() {
 #if __EMSCRIPTEN__
     int fs;
@@ -207,19 +346,34 @@ int main_tick() {
       dump_scene();
     }
     ImGui::End();
+
+    ImGui::Begin("Log");
+    debug_log.Draw("Log");
+    ImGui::End();
+
     ImGui::Begin("Text Editor");
     {
-      char const **ptr   = NULL;
-      u32          count = 0;
+      TMP_STORAGE_SCOPE;
+      char const **ptr     = NULL;
+      u32          count   = 0;
+      static i32   current = -1;
+      static char  current_name[0x20];
+
       Scene::get_scene()->get_source_list(&ptr, &count);
-      static i32 current = -1;
       if (ImGui::Combo("Source", &current, ptr, (i32)count)) {
         editor.SetText(Scene::get_scene()->get_source(ptr[current]));
+        memcpy(current_name, ptr[current], sizeof(current_name));
+        current_name[sizeof(current_name) - 1] = '\0';
       }
-      ImGui::SameLine();
-      if (ImGui::Button("Save")) {
-        if (current >= 0) {
-          Scene::get_scene()->set_source(ptr[current], editor.GetText().c_str());
+      if (current >= 0) {
+        ImGui::SameLine();
+        if (ImGui::Button("Save")) {
+          Scene::get_scene()->set_source(current_name, editor.GetText().c_str());
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Run")) {
+          Scene::get_scene()->set_source(current_name, editor.GetText().c_str());
+          Scene::get_scene()->run_script(current_name);
         }
       }
       ImGui::SameLine();
@@ -373,14 +527,27 @@ void main_loop() {
 
 int main() {
 #if __EMSCRIPTEN__
+  {
+    char const *source = R"(
+    (main
+      (add_node "new node #" "Gfx/DrawCall" -6.409513 27.993538 1.000000 1.000000)
+      (add_node "new node 2" "Gfx/DrawCall" -12.458076 14.947708 1.000000 1.000000)
+      (move_camera -1.915402 9.350576 48.028961)
+    )
+    )";
+    Scene::get_scene()->add_source("init", source);
+    Scene::get_scene()->run_script("init");
+  }
 #else
   {
     tl_alloc_tmp_enter();
     defer(tl_alloc_tmp_exit());
-    Scene::get_scene()->init_from_json(read_file_tmp("scene.json"));
+    Scene::get_scene()->add_source("init", read_file_tmp("scene.lsp"));
+    Scene::get_scene()->run_script("init");
   }
 #endif
-
+  TextEditor::LanguageDefinition::CPlusPlus();
+  editor.SetPalette(TextEditor::GetRetroBluePalette());
   //  Scene::get_scene()->add_source("test",
   //                                 R"(#version 300 es
   //  precision highp float;

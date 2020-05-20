@@ -52,7 +52,8 @@ struct Node {
   //   size.x * 2
   //
   u32    id;
-  char   name[0x10];
+  u32    num_in_slots;
+  u32    num_out_slots;
   Node_t type;
   float2 pos;
   float2 size;
@@ -66,6 +67,15 @@ struct Node {
            y > pos.y - size.y && //
            y < pos.y + size.y;
   }
+  bool is_alive() { return id > 0; }
+  u32  get_index() { return id - 1; }
+};
+
+struct Link {
+  u32 src_node_id;
+  u32 src_slot_id;
+  u32 dst_node_id;
+  u32 dst_slot_id;
 };
 
 #endif // NODES_HPP

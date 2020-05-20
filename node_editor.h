@@ -153,9 +153,9 @@ struct Node;
 
 struct Scene {
   Context2D c2d;
-  u32       add_node(char const *name, char const *type, float x, float y, float size_x, float size_y);
-  void      draw();
-  void      consume_event(SDL_Event event);
+  u32  add_node(char const *name, char const *type, float x, float y, float size_x, float size_y);
+  void draw();
+  void consume_event(SDL_Event event);
   // called per frame
   void get_source_list(char const ***ptr, u32 *count);
   void get_node_type_list(char const ***ptr, u32 *count);
@@ -166,9 +166,11 @@ struct Scene {
   void          remove_source(char const *name);
   void          add_source(char const *name, char const *text);
   void          reset();
-  void          get_nodes(Node **pnodes, u32 *count);
-  void          init_from_json(char const *str);
-  string_ref    to_json_tmp();
+  void          run_script(char const *src_name);
+  string_ref    get_save_script();
+  void          push_warning(char const *fmt, ...);
+  void          push_debug_message(char const *fmt, ...);
+  void          push_error(char const *fmt, ...);
   static Scene *get_scene();
 };
 

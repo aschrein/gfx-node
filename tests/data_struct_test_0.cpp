@@ -1,4 +1,5 @@
 #define UTILS_IMPL
+#include "../script.hpp"
 #include "../utils.hpp"
 #include <stdio.h>
 
@@ -33,7 +34,7 @@ struct Test_Allocator {
 size_t Test_Allocator::total_alloced = 0;
 
 int main() {
-  u32 N = 10000;
+  u32 N = 100;
   ito(N) {
     Array<u32, 0x1000, Test_Allocator> arr;
     arr.init();
@@ -58,9 +59,7 @@ int main() {
       arr.push(rnd);
       set.insert(rnd);
     }
-    jto(N) {
-      ASSERT_ALWAYS(set.contains(arr[j]));
-    }
+    jto(N) { ASSERT_ALWAYS(set.contains(arr[j])); }
     arr.release();
     set.release();
     ASSERT_ALWAYS(Test_Allocator::total_alloced == 0);
@@ -115,7 +114,7 @@ int main() {
       string_ref key = stref_tmp(buf);
       ASSERT_ALWAYS(table.contains(key));
       ASSERT_ALWAYS(table.get(key) == arr[j]);
-//      fprintf(stdout, "table[%.*s] = %lu\n", (i32)key.len, key.ptr, table.get(key));
+      //      fprintf(stdout, "table[%.*s] = %lu\n", (i32)key.len, key.ptr, table.get(key));
     }
     jto(N) {
       snprintf(buf, sizeof(buf), "key: %lu", arr[j]);
@@ -128,6 +127,28 @@ int main() {
     table.release();
     tl_alloc_tmp_exit();
     ASSERT_ALWAYS(Test_Allocator::total_alloced == 0);
+  }
+  {
+    char const *      source         = R"(
+    (main
+      (add_node
+        (format "my_node %i" 666)
+        "Gfx/DrawCall"
+        0.0 0.0
+        1.0 1.0
+      )
+    )
+    )";
+    static Pool<List> list_storage = Pool<List>::create((1 << 10));
+    list_storage.enter_scope();
+    defer(list_storage.exit_scope());
+    struct List_Allocator {
+      List *alloc() { return list_storage.alloc_zero(1); }
+      void  reset() {}
+    } list_allocator;
+    List *root = List::parse(stref_s(source), list_allocator);
+    NOTNULL(root);
+    root->dump();
   }
   ASSERT_ALWAYS(Test_Allocator::total_alloced == 0);
   fprintf(stdout, "[SUCCESS]\n");

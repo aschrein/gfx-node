@@ -1,6 +1,5 @@
 emcc -O2 \
 ../main.cpp \
-../io_parser.cpp \
 ../context.cpp \
 ../3rdparty/imgui/imgui_draw.cpp \
 ../3rdparty/imgui/imgui.cpp \

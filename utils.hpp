@@ -160,7 +160,7 @@ static void unmap_pages(void *ptr, size_t num_pages) {}
 static void map_pages(void *ptr, size_t num_pages) {}
 #endif
 
-template <typename T = uint8_t> struct Temporary_Storage {
+template <typename T = uint8_t> struct Pool {
   uint8_t *ptr;
   size_t   cursor;
   size_t   capacity;
@@ -168,11 +168,11 @@ template <typename T = uint8_t> struct Temporary_Storage {
   size_t   stack_capacity;
   size_t   stack_cursor;
 
-  static Temporary_Storage create(size_t capacity) {
+  static Pool create(size_t capacity) {
     ASSERT_DEBUG(capacity > 0);
-    Temporary_Storage out;
-    size_t            STACK_CAPACITY = 0x100 * sizeof(size_t);
-    out.mem_length = get_num_pages(STACK_CAPACITY + capacity * sizeof(T)) * get_page_size();
+    Pool   out;
+    size_t STACK_CAPACITY = 0x100 * sizeof(size_t);
+    out.mem_length        = get_num_pages(STACK_CAPACITY + capacity * sizeof(T)) * get_page_size();
 #if __linux__
     out.ptr = (uint8_t *)mmap(NULL, out.mem_length, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE,
                               -1, 0);
@@ -192,7 +192,7 @@ template <typename T = uint8_t> struct Temporary_Storage {
 #else
     if (this->ptr) free(this->ptr);
 #endif
-    memset(this, 0, sizeof(Temporary_Storage));
+    memset(this, 0, sizeof(Pool));
   }
 
   void push(T const &v) {
@@ -206,6 +206,15 @@ template <typename T = uint8_t> struct Temporary_Storage {
 
   T *alloc(size_t size) {
     ASSERT_DEBUG(size != 0);
+    T *ptr = (T *)(this->ptr + this->stack_capacity + this->cursor * sizeof(T));
+    this->cursor += size;
+    ASSERT_DEBUG(this->cursor < this->capacity);
+    return ptr;
+  }
+
+  T *try_alloc(size_t size) {
+    ASSERT_DEBUG(size != 0);
+    if (this->cursor + size > this->capacity) return NULL;
     T *ptr = (T *)(this->ptr + this->stack_capacity + this->cursor * sizeof(T));
     this->cursor += size;
     ASSERT_DEBUG(this->cursor < this->capacity);
@@ -258,6 +267,8 @@ template <typename T = uint8_t> struct Temporary_Storage {
   }
 };
 
+template <typename T = u8> using Temporary_Storage = Pool<T>;
+
 /** Allocates 'size' bytes using thread local allocator
  */
 void *tl_alloc(size_t size);
@@ -280,6 +291,9 @@ struct string_ref {
   size_t      len;
   string_ref  substr(size_t offset, size_t new_len) { return string_ref{ptr + offset, new_len}; }
 };
+
+// for printf
+#define STRF(str) (i32) str.len, str.ptr
 
 static bool operator==(string_ref a, string_ref b) {
   if (a.ptr == NULL || b.ptr == NULL) return false;
@@ -454,8 +468,9 @@ static char *read_file_tmp(char const *filename) {
   long fsize = ftell(text_file);
   fseek(text_file, 0, SEEK_SET);
   size_t size = (size_t)fsize;
-  char * data = (char *)tl_alloc_tmp((size_t)fsize);
+  char * data = (char *)tl_alloc_tmp((size_t)fsize + 1);
   fread(data, 1, (size_t)fsize, text_file);
+  data[size] = '\0';
   fclose(text_file);
   return data;
 }

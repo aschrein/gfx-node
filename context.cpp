@@ -1,7 +1,7 @@
 #include "node_editor.h"
+#include "nodes.hpp"
 #include "script.hpp"
 #include "simplefont.h"
-#include "nodes.hpp"
 
 static u16 f32_to_u16(f32 x) { return (u16)(clamp(x, 0.0f, 1.0f) * ((1 << 16) - 1)); }
 
@@ -48,12 +48,11 @@ struct _String2D {
   Color    color;
   bool     world_space;
 };
-static Temporary_Storage<>     ts             = Temporary_Storage<>::create(16 * (1 << 20));
-static Temporary_Storage<List> list_storage   = Temporary_Storage<List>::create((1 << 12));
-Temporary_Storage<Line2D>      line_storage   = Temporary_Storage<Line2D>::create(1 << 17);
-Temporary_Storage<Rect2D>      quad_storage   = Temporary_Storage<Rect2D>::create(1 << 17);
-Temporary_Storage<_String2D>   string_storage = Temporary_Storage<_String2D>::create(1 << 18);
-Temporary_Storage<char>        char_storage   = Temporary_Storage<char>::create(1 * (1 << 20));
+// static Temporary_Storage<>          ts             = Temporary_Storage<>::create(16 * (1 << 20));
+static Temporary_Storage<Line2D>    line_storage   = Temporary_Storage<Line2D>::create(1 << 17);
+static Temporary_Storage<Rect2D>    quad_storage   = Temporary_Storage<Rect2D>::create(1 << 17);
+static Temporary_Storage<_String2D> string_storage = Temporary_Storage<_String2D>::create(1 << 18);
+static Temporary_Storage<char>      char_storage   = Temporary_Storage<char>::create(1 * (1 << 20));
 
 struct Source {
   // Name and text are also zero terminated
@@ -105,6 +104,9 @@ struct SourceDB {
     sources[id].release();
   }
   void add_source(string_ref name, string_ref text) {
+    if (name2id.contains(name)) {
+      remove_source(name);
+    }
     ASSERT_DEBUG(!name2id.contains(name));
     Source src;
     src.init(name, text);
@@ -136,13 +138,101 @@ struct SourceDB {
   }
 };
 
-struct _Scene : public Scene {
-  SourceDB    sourcedb;
+struct NodeDB {
+  Hash_Table<string_ref, u32> name2id;
+  Array<string_ref>           id2name;
+
+  Pool<char>  string_storage;
   Array<Node> nodes;
-  void        new_frame() { sourcedb.rebuild_index(); }
-  void        init() { sourcedb.init(); }
-  void        release() { sourcedb.release(); }
-  void        reset() {
+  Array<Link> links;
+  void        init() {
+    name2id.init();
+    id2name.init();
+    nodes.init();
+    links.init();
+    string_storage = Pool<char>::create(1 << 20);
+  }
+  void release() {
+    name2id.release();
+    id2name.release();
+    nodes.release();
+    links.release();
+    string_storage.release();
+  }
+  void rebuild_index() {
+    auto new_string_storage = Pool<char>::create(1 << 20);
+    auto old_id2name        = id2name;
+    id2name                 = Array<string_ref>();
+    id2name.init();
+    name2id.release();
+    name2id.init();
+    id2name.resize(nodes.size);
+    ito(nodes.size) {
+      Node &node = nodes[i];
+      if (node.is_alive()) {
+        string_ref tmp_name = old_id2name[node.get_index()];
+        // zero terminated
+        char *name_ptr = new_string_storage.alloc(tmp_name.len + 1);
+        memcpy(name_ptr, tmp_name.ptr, tmp_name.len + 1);
+        name2id.insert(string_ref{.ptr = name_ptr, tmp_name.len}, node.get_index());
+        id2name[i] = string_ref{.ptr = name_ptr, tmp_name.len};
+      }
+    }
+    string_storage.release();
+    string_storage = new_string_storage;
+    old_id2name.release();
+  }
+  string_ref get_name(u32 id) {
+    ASSERT_DEBUG(id > 0);
+    return id2name[id - 1];
+  }
+  void remove_node(string_ref name) {
+    ASSERT_DEBUG(name2id.contains(name));
+    u32 id = name2id.get(name);
+    memset(&nodes[id], 0, sizeof(Node));
+    name2id.remove(name);
+  }
+  u32 add_node(string_ref name, string_ref type_name, float x, float y, float size_x,
+               float size_y) {
+    Node_t type = str_to_node_type(type_name);
+    if (type == Node_t::UNKNOWN) return 0;
+    if (name2id.contains(name)) {
+      remove_node(name);
+    }
+    Node node;
+    node.type   = type;
+    node.pos.x  = x;
+    node.pos.y  = y;
+    node.size.x = size_x;
+    node.size.y = size_y;
+    node.id     = nodes.size + 1;
+    nodes.push(node);
+    {
+      char *name_ptr = string_storage.try_alloc(name.len + 1);
+      if (name_ptr == NULL) {
+        rebuild_index();
+      } else {
+        memcpy(name_ptr, name.ptr, name.len);
+        name_ptr[name.len] = '\0';
+        name2id.insert(string_ref{.ptr = name_ptr, name.len}, node.get_index());
+        id2name.push(string_ref{.ptr = name_ptr, name.len});
+      }
+    }
+
+    return node.id;
+  }
+};
+
+struct _Scene : public Scene {
+  SourceDB sourcedb;
+  NodeDB   nodedb;
+  void     new_frame() { sourcedb.rebuild_index(); }
+  void     init() {
+    sourcedb.init();
+    nodedb.init();
+  }
+  void release() { sourcedb.release(); }
+  void reset() {
     release();
     init();
   }
@@ -160,24 +250,285 @@ struct _Scene : public Scene {
   void add_source(char const *name, char const *text) {
     sourcedb.add_source(stref_s(name), stref_s(text));
   }
-  u32 add_node(char const *name, char const *type, float x, float y, float size_x, float size_y) {
-    Node node;
-    // truncate to sizeof(node.name)
-    memcpy(node.name, name, sizeof(node.name));
-    node.name[sizeof(node.name) - 1] = '\0';
-    node.type                        = str_to_node_type(stref_s(type));
-    node.pos.x                       = x;
-    node.pos.y                       = y;
-    node.size.x                      = size_x;
-    node.size.y                      = size_y;
-    node.id                          = nodes.size + 1;
-    nodes.push(node);
-    return node.id;
+  u32 add_node(char const *name, char const *type_name, float x, float y, float size_x,
+               float size_y) {
+    if (name == NULL || type_name == NULL) return 0;
+    return nodedb.add_node(stref_s(name), stref_s(type_name), x, y, size_x, size_y);
   }
-  void get_nodes(Node **pnodes, u32 *count) {
-    *pnodes = nodes.ptr;
-    *count  = nodes.size;
+  void run_script(char const *src_name) {
+    string_ref source = sourcedb.get_text(stref_s(src_name));
+    Evaluator  evaluator;
+    evaluator.scene = this;
+    evaluator.parse_and_eval(source);
   }
+  struct Tmp_String_Builder {
+    char * ptr;
+    size_t size;
+    size_t cursor;
+    bool   error;
+    void   init(size_t size) {
+      ptr        = (char *)tl_alloc_tmp(size);
+      error      = false;
+      this->size = size;
+      cursor     = 0;
+    }
+    void push_string(char const *str_raw) {
+      string_ref str = stref_s(str_raw);
+      char *     dst = ptr + cursor;
+      cursor += str.len;
+      if (cursor > size) error = true;
+      memcpy(dst, str_raw, str.len);
+    }
+    void push_fmt(char const *fmt, ...) {
+      char *  dst = ptr + cursor;
+      va_list args;
+      va_start(args, fmt);
+      i32 num_chars = vsprintf(dst, fmt, args);
+      va_end(args);
+      if (num_chars > 0) {
+        cursor += (size_t)num_chars;
+      }
+    }
+    string_ref finish() { return string_ref{.ptr = ptr, .len = cursor}; }
+  };
+  string_ref get_save_script() {
+    Tmp_String_Builder builder;
+    builder.init(1 << 20);
+    builder.push_string("(main\n");
+    ito(nodedb.nodes.size) {
+      Node &node = nodedb.nodes[i];
+      if (node.is_alive()) {
+        builder.push_fmt(                                 //
+            "  (add_node \"%.*s\" \"%s\" %f %f %f %f)\n", //
+            STRF(nodedb.get_name(node.id)),               //
+            node_type_to_str(node.type),                  //
+            node.pos.x, node.pos.y,                       //
+            node.size.x, node.size.y);
+      }
+    }
+    builder.push_fmt(                 //
+        "  (move_camera %f %f %f)\n", //
+        c2d.camera.pos.x, c2d.camera.pos.y, c2d.camera.pos.z);
+    builder.push_string(")");
+    return builder.finish();
+  }
+  struct Evaluator {
+    _Scene *     scene;
+    bool         eval_error;
+    static char *get_msg_buf() {
+      static char msg_buf[0x100] = {};
+      return msg_buf;
+    }
+    static Pool<List> &get_list_storage() {
+      static Pool<List> list_storage = Pool<List>::create((1 << 10));
+      return list_storage;
+    }
+    struct Value {
+      enum class Value_t { UNKNOWN = 0, I32, F32, SYMBOL };
+      Value_t    type;
+      f32        f;
+      i32        i;
+      string_ref str;
+    };
+    struct Symbol {
+      string_ref name;
+      Value *    val;
+    };
+    static Pool<Symbol> &get_symbol_table() {
+      static Pool<Symbol> symbol_table = Pool<Symbol>::create((1 << 10));
+      return symbol_table;
+    }
+    Value *lookup_symbol(string_ref name) {
+      ito(get_symbol_table().cursor) {
+        if (get_symbol_table().at(i)->name == name) {
+          return get_symbol_table().at(i)->val;
+        }
+      }
+      return NULL;
+    }
+    void parse_and_eval(string_ref source) {
+      get_list_storage().enter_scope();
+      defer(get_list_storage().exit_scope());
+      struct List_Allocator {
+        List *alloc() { return get_list_storage().alloc_zero(1); }
+        void  reset() {}
+      } list_allocator;
+      List *root = List::parse(source, list_allocator);
+      if (root != NULL) {
+        TMP_STORAGE_SCOPE;
+        eval_error = false;
+        eval(root);
+        if (eval_error) {
+          scene->push_warning("Evaluation error");
+        }
+      } else {
+        scene->push_warning("Parse error");
+      }
+    }
+    Value *eval(List *l) {
+      if (l == NULL) return NULL;
+        ///////////////////
+        // Macro helpers //
+        ///////////////////
+#define ALLOC_VAL() (Value *)tl_alloc_tmp(sizeof(Value))
+#define EVAL_ASSERT(x)                                                                             \
+  do {                                                                                             \
+    if (!(x)) {                                                                                    \
+      eval_error = true;                                                                           \
+      scene->push_error(#x);                                                                       \
+      return NULL;                                                                                 \
+    }                                                                                              \
+  } while (0)
+#define CHECK_ERROR                                                                                \
+  do {                                                                                             \
+    if (eval_error) {                                                                              \
+      return NULL;                                                                                 \
+    }                                                                                              \
+  } while (0)
+#define CALL_EVAL(x)                                                                               \
+  eval(x);                                                                                         \
+  CHECK_ERROR
+      ///////////////////
+      if (l->nonempty()) {
+        i32  imm32;
+        f32  immf32;
+        bool is_imm32  = parse_decimal_int(l->symbol.ptr, l->symbol.len, &imm32);
+        bool is_immf32 = parse_float(l->symbol.ptr, l->symbol.len, &immf32);
+        if (is_imm32) {
+          Value *new_val = ALLOC_VAL();
+          new_val->i     = imm32;
+          new_val->type  = Value::Value_t::I32;
+          return new_val;
+        } else if (is_immf32) {
+          Value *new_val = ALLOC_VAL();
+          new_val->f     = immf32;
+          new_val->type  = Value::Value_t::F32;
+          return new_val;
+        } else if (l->cmp_symbol("main")) {
+          List *cur = l->next;
+          while (cur != NULL) {
+            CALL_EVAL(cur);
+            cur = cur->next;
+          }
+          return NULL;
+        } else if (l->cmp_symbol("add_node")) {
+          Value *name = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(name != NULL && name->type == Value::Value_t::SYMBOL);
+          Value *type = CALL_EVAL(l->get(2));
+          EVAL_ASSERT(type != NULL && type->type == Value::Value_t::SYMBOL);
+          Value *x = CALL_EVAL(l->get(3));
+          EVAL_ASSERT(x != NULL && x->type == Value::Value_t::F32);
+          Value *y = CALL_EVAL(l->get(4));
+          EVAL_ASSERT(y != NULL && y->type == Value::Value_t::F32);
+          Value *size_x = CALL_EVAL(l->get(5));
+          EVAL_ASSERT(size_x != NULL && size_x->type == Value::Value_t::F32);
+          Value *size_y = CALL_EVAL(l->get(6));
+          EVAL_ASSERT(size_y != NULL && size_y->type == Value::Value_t::F32);
+          scene->add_node(stref_to_tmp_cstr(name->str), stref_to_tmp_cstr(type->str), x->f, y->f,
+                          size_x->f, size_y->f);
+          return NULL;
+        } else if (l->cmp_symbol("add_source")) {
+          Value *name = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(name != NULL && name->type == Value::Value_t::SYMBOL);
+          Value *text = CALL_EVAL(l->get(2));
+          EVAL_ASSERT(text != NULL && text->type == Value::Value_t::SYMBOL);
+          scene->add_source(stref_to_tmp_cstr(name->str), stref_to_tmp_cstr(text->str));
+          return NULL;
+        } else if (l->cmp_symbol("move_camera")) {
+          Value *x = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(x != NULL && x->type == Value::Value_t::F32);
+          Value *y = CALL_EVAL(l->get(2));
+          EVAL_ASSERT(y != NULL && y->type == Value::Value_t::F32);
+          Value *z = CALL_EVAL(l->get(3));
+          EVAL_ASSERT(z != NULL && z->type == Value::Value_t::F32);
+          scene->c2d.camera.pos.x = x->f;
+          scene->c2d.camera.pos.y = y->f;
+          scene->c2d.camera.pos.z = z->f;
+          return NULL;
+        } else if (l->cmp_symbol("format")) {
+          Value *fmt = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(fmt != NULL && fmt->type == Value::Value_t::SYMBOL);
+          List *cur = l->get(2);
+          {
+            char *      tmp_buf = (char *)tl_alloc_tmp(0x100);
+            u32         cursor  = 0;
+            char const *c       = fmt->str.ptr;
+            char const *end     = fmt->str.ptr + fmt->str.len;
+            while (c != end) {
+              if (c[0] == '%') {
+                if (c + 1 == end) {
+                  eval_error = true;
+                  scene->push_error("[format] Format string ends with %");
+                  return NULL;
+                }
+
+                if (cur == NULL) {
+                  eval_error = true;
+                  scene->push_error("[format] Not enough arguments", c[1]);
+                  return NULL;
+                } else {
+                  i32    num_chars = 0;
+                  Value *val       = eval(cur);
+                  if (c[1] == 'i') {
+                    EVAL_ASSERT(val != NULL && val->type == Value::Value_t::I32);
+                    num_chars = sprintf(tmp_buf + cursor, "%i", val->i);
+                  } else if (c[1] == 'f') {
+                    EVAL_ASSERT(val != NULL && val->type == Value::Value_t::F32);
+                    num_chars = sprintf(tmp_buf + cursor, "%f", val->f);
+                  } else if (c[1] == 's') {
+                    EVAL_ASSERT(val != NULL && val->type == Value::Value_t::SYMBOL);
+                    num_chars = sprintf(tmp_buf + cursor, "%.*s", (i32)val->str.len, val->str.ptr);
+                    num_chars -= 1;
+                  } else {
+                    eval_error = true;
+                    scene->push_error("[format] Unknown format: %%%c", c[1]);
+                    return NULL;
+                  }
+                  if (num_chars < 0) {
+                    eval_error = true;
+                    scene->push_error("[format] Blimey!");
+                    return NULL;
+                  }
+                  if (num_chars > sizeof(0x100)) {
+                    eval_error = true;
+                    scene->push_error("[format] Format buffer overflow!");
+                    return NULL;
+                  }
+                  cursor += num_chars;
+                }
+                cur = cur->next;
+                c += 1;
+              } else {
+                tmp_buf[cursor++] = c[0];
+              }
+              c += 1;
+            }
+            Value *new_val = ALLOC_VAL();
+            new_val->str   = stref_s(tmp_buf);
+            new_val->type  = Value::Value_t::SYMBOL;
+            return new_val;
+          }
+        } else {
+          //          eval_error = true;
+          //          scene->push_error("[format] Unknown symbol: \"%.*s\"", (i32)l->symbol.len,
+          //          l->symbol.ptr); return NULL;
+          EVAL_ASSERT(l->nonempty());
+          Value *new_val = ALLOC_VAL();
+          new_val->str   = l->symbol;
+          new_val->type  = Value::Value_t::SYMBOL;
+          return new_val;
+        }
+      } else {
+        EVAL_ASSERT(l->child != NULL);
+        Value *child_value = CALL_EVAL(l->child);
+        return child_value;
+      }
+      TRAP;
+#undef EVAL_ASSERT
+#undef CHECK_ERROR
+    }
+  };
+
   void consume_event(SDL_Event event) {
     float        camera_speed      = 1.0f;
     static bool  ldown             = false;
@@ -218,9 +569,9 @@ struct _Scene : public Scene {
       if (m->button == 1) {
         ldown = true;
       }
-      ito(nodes.size) {
-        Node &node = nodes[i];
-        if (node.inside(c2d.camera.mouse_world_x, c2d.camera.mouse_world_y)) {
+      ito(nodedb.nodes.size) {
+        Node &node = nodedb.nodes[i];
+        if (node.is_alive() && node.inside(c2d.camera.mouse_world_x, c2d.camera.mouse_world_y)) {
           selected_node = i;
           return;
         }
@@ -259,7 +610,7 @@ struct _Scene : public Scene {
       old_mouse_world_y = c2d.camera.mouse_world_y;
 
       if (ldown && selected_node >= 0) {
-        Node &node = nodes[selected_node];
+        Node &node = nodedb.nodes[selected_node];
         node.pos.x += wmdx; // c2d.camera.pos.z * (float)dx / c2d.camera.viewport_height;
         node.pos.y += wmdy; // c2d.camera.pos.z * (float)dy / c2d.camera.viewport_height;
       }
@@ -279,35 +630,33 @@ void Scene::draw() {
   quad_storage.enter_scope();
   string_storage.enter_scope();
   char_storage.enter_scope();
-  ts.enter_scope();
+  TMP_STORAGE_SCOPE
   c2d.imcanvas_start();
-  defer({
-    c2d.imcanvas_end();
-    ts.exit_scope();
-  });
-  u32    W             = 256;
-  u32    H             = 256;
-  float  dx            = 1.0f;
-  float  dy            = 1.0f;
-  float  size_x        = 256.0f;
-  float  size_y        = 256.0f;
-  float  QUAD_LAYER    = 1.0f / 256.0f;
-  float  GRID_LAYER    = 2.0f / 256.0f;
-  float  NODE_BG_LAYER = 10.0f / 256.0f;
-  float  TEXT_LAYER    = 30.0f / 256.0f;
-  float3 grid_color    = parse_color_float3(dark_mode::g_grid_color);
-  c2d.draw_string({//
-                   .c_str = "hello world!",
-                   .x     = c2d.camera.mouse_world_x,
-                   .y     = c2d.camera.mouse_world_y,
-                   .z     = GRID_LAYER,
-                   .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
+  defer({ c2d.imcanvas_end(); });
+  u32    W               = 256;
+  u32    H               = 256;
+  float  dx              = 1.0f;
+  float  dy              = 1.0f;
+  float  size_x          = 256.0f;
+  float  size_y          = 256.0f;
+  float  QUAD_LAYER      = 1.0f / 256.0f;
+  float  GRID_LAYER      = 2.0f / 256.0f;
+  float  NODE_BG_LAYER   = 10.0f / 256.0f;
+  float  NODE_NAME_LAYER = 11.0f / 256.0f;
+  float  TEXT_LAYER      = 30.0f / 256.0f;
+  float3 grid_color      = parse_color_float3(dark_mode::g_grid_color);
+  //  c2d.draw_string({//
+  //                   .c_str = "hello world!",
+  //                   .x     = c2d.camera.mouse_world_x,
+  //                   .y     = c2d.camera.mouse_world_y,
+  //                   .z     = GRID_LAYER,
+  //                   .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
   c2d.draw_rect({//
                  .x      = c2d.camera.mouse_world_x,
                  .y      = c2d.camera.mouse_world_y,
                  .z      = GRID_LAYER,
-                 .width  = 1.0f,
-                 .height = 1.0f,
+                 .width  = 1.0e-1f,
+                 .height = 1.0e-1f,
 
                  .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
   ito(W + 1) {
@@ -328,19 +677,28 @@ void Scene::draw() {
                    .z     = GRID_LAYER,
                    .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
   }
-  ito(scene->nodes.size) {
-    Node &node = scene->nodes[i];
-    c2d.draw_rect({//
-                   .x      = node.pos.x - node.size.x,
-                   .y      = node.pos.y - node.size.y,
-                   .z      = NODE_BG_LAYER,
-                   .width  = node.size.x * 2.0f,
-                   .height = node.size.y * 2.0f,
-                   .color  = {.r = 0.5f, .g = 0.5f, .b = 0.5f}});
+  ito(scene->nodedb.nodes.size) {
+    Node &node = scene->nodedb.nodes[i];
+    if (node.is_alive()) {
+      c2d.draw_string({//
+                       .c_str = scene->nodedb.get_name(node.id).ptr,
+                       .x     = node.pos.x,
+                       .y     = node.pos.y,
+                       .z     = NODE_NAME_LAYER,
+                       .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
+      c2d.draw_rect({//
+                     .x      = node.pos.x - node.size.x,
+                     .y      = node.pos.y - node.size.y,
+                     .z      = NODE_BG_LAYER,
+                     .width  = node.size.x * 2.0f,
+                     .height = node.size.y * 2.0f,
+                     .color  = {.r = 0.5f, .g = 0.5f, .b = 0.5f}});
+    }
   }
 }
 
-u32 Scene::add_node(char const *name, char const *type, float x, float y, float size_x, float size_y) {
+u32 Scene::add_node(char const *name, char const *type, float x, float y, float size_x,
+                    float size_y) {
   _Scene *scene = (_Scene *)this;
   return scene->add_node(name, type, x, y, size_x, size_y);
 }
@@ -373,7 +731,14 @@ void Scene::reset() {
   _Scene *scene = (_Scene *)this;
   scene->reset();
 }
-
+void Scene::run_script(char const *src_name) {
+  _Scene *scene = (_Scene *)this;
+  scene->run_script(src_name);
+}
+string_ref Scene::get_save_script() {
+  _Scene *scene = (_Scene *)this;
+  return scene->get_save_script();
+}
 _Scene     g_scene;
 static int _init_ = [] {
   g_scene.init();
@@ -580,11 +945,6 @@ void Oth_Camera::consume_event(SDL_Event event) {
 
 void Context2D::consume_event(SDL_Event event) { camera.consume_event(event); }
 
-void Scene::get_nodes(Node **pnodes, u32 *count) {
-  _Scene *scene = (_Scene *)this;
-  scene->get_nodes(pnodes, count);
-}
-
 void Scene::consume_event(SDL_Event event) {
   _Scene *scene = (_Scene *)this;
   scene->consume_event(event);
@@ -710,10 +1070,9 @@ void Context2D::render_stuff() {
       //      uint32_t max_num_quads = width * height;
       uint32_t max_num_quads = quad_storage.cursor;
       uint32_t num_quads     = 0;
-      ts.enter_scope();
-      defer(ts.exit_scope());
+      TMP_STORAGE_SCOPE;
       Rect_Instance_GL *qinstances =
-          (Rect_Instance_GL *)ts.alloc(sizeof(Rect_Instance_GL) * max_num_quads);
+          (Rect_Instance_GL *)tl_alloc_tmp(sizeof(Rect_Instance_GL) * max_num_quads);
       ito(max_num_quads) {
         Rect2D quad2d = *quad_storage.at(i);
         if (quad2d.world_space && !camera.intersects(quad2d.x, quad2d.y, quad2d.x + quad2d.width,
@@ -779,9 +1138,8 @@ void Context2D::render_stuff() {
         float r1, g1, b1;
       };
       static_assert(sizeof(Line_GL) == 56, "");
-      ts.enter_scope();
-      defer(ts.exit_scope());
-      Line_GL *lines = (Line_GL *)ts.alloc(sizeof(Line_GL) * num_lines);
+      TMP_STORAGE_SCOPE;
+      Line_GL *lines = (Line_GL *)tl_alloc_tmp(sizeof(Line_GL) * num_lines);
       ito(num_lines) {
         Line2D  l = *line_storage.at(i);
         Line_GL lgl;
@@ -938,10 +1296,9 @@ void Context2D::render_stuff() {
       uint32_t   num_strings    = string_storage.cursor;
       _String2D *strings        = string_storage.at(0);
       kto(num_strings) { max_num_glyphs += (uint32_t)strings[k].len; }
-      ts.enter_scope();
-      defer(ts.exit_scope());
+      TMP_STORAGE_SCOPE;
       Glyph_Instance_GL *glyphs_gl =
-          (Glyph_Instance_GL *)ts.alloc(sizeof(Glyph_Instance_GL) * max_num_glyphs);
+          (Glyph_Instance_GL *)tl_alloc_tmp(sizeof(Glyph_Instance_GL) * max_num_glyphs);
       uint32_t num_glyphs = 0;
 
       kto(num_strings) {

@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.4.3)
 project(gfxnode)
 add_executable(gfxnode
 main.cpp
-io_parser.cpp
 context.cpp
 3rdparty/imgui/imgui.cpp
 3rdparty/imgui/imgui_widgets.cpp

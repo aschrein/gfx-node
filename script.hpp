@@ -15,8 +15,7 @@ struct List {
     return symbol == stref_s(str);
   }
   bool has_child(char const *name) { return child != NULL && child->cmp_symbol(name); }
-  template<typename T>
-  void match_children(char const *name, T on_match) {
+  template <typename T> void match_children(char const *name, T on_match) {
     if (child != NULL) {
       if (child->cmp_symbol(name)) {
         on_match(child);
@@ -30,7 +29,8 @@ struct List {
   List *get(u32 i) {
     List *cur = this;
     while (i != 0) {
-      NOTNULL(cur);
+      if (cur == NULL)
+        return NULL;
       cur = cur->next;
       i -= 1;
     }
@@ -95,12 +95,11 @@ struct List {
     fflush(dotgraph);
     fclose(dotgraph);
   }
-  template <typename T> List *parse(string_ref text, T allocator) {
+  template <typename T> static List *parse(string_ref text, T allocator) {
     List *root = allocator.alloc();
     List *cur  = root;
-    tl_alloc_tmp_enter();
-    defer(tl_alloc_tmp_exit());
-    List **stack        = (List **)tl_alloc_tmp(sizeof(List *) * (1 << 10));
+    TMP_STORAGE_SCOPE;
+    List **stack        = (List **)tl_alloc_tmp(sizeof(List *) * (1 << 8));
     u32    stack_cursor = 0;
     enum class State : char {
       UNDEFINED = 0,
@@ -164,9 +163,11 @@ struct List {
       char  c     = text.ptr[i];
       State state = state_table[(u8)c];
       switch (state) {
-      case State::UNDEFINED: goto error_parsing;
+      case State::UNDEFINED: {
+        goto error_parsing;
+      }
       case State::SAW_QUOTE: {
-        if (cur_non_empty()) next_item();
+        if (cur_non_empty() || cur_has_child()) next_item();
         i += 1;
         while ((c = text.ptr[i]) != '"') {
           append_char();
@@ -198,12 +199,12 @@ struct List {
       prev_state = state;
       i += 1;
     }
-  error_parsing:
-    allocator.reset();
-    return NULL;
   exit_loop:
     (void)0;
     return root;
+  error_parsing:
+    allocator.reset();
+    return NULL;
   }
 };
 
