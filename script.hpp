@@ -29,8 +29,7 @@ struct List {
   List *get(u32 i) {
     List *cur = this;
     while (i != 0) {
-      if (cur == NULL)
-        return NULL;
+      if (cur == NULL) return NULL;
       cur = cur->next;
       i -= 1;
     }
@@ -168,10 +167,23 @@ struct List {
       }
       case State::SAW_QUOTE: {
         if (cur_non_empty() || cur_has_child()) next_item();
-        i += 1;
-        while ((c = text.ptr[i]) != '"') {
-          append_char();
+        if (text.ptr[i + 1] == '"' && text.ptr[i + 2] == '"') {
+          i += 3;
+          while (
+            text.ptr[i + 0] != '"' || //
+            text.ptr[i + 1] != '"' || //
+            text.ptr[i + 2] != '"'
+          ) {
+            append_char();
+            i += 1;
+          }
+          i += 2;
+        } else {
           i += 1;
+          while (text.ptr[i] != '"') {
+            append_char();
+            i += 1;
+          }
         }
         next_item();
         break;

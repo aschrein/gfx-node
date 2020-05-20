@@ -59,6 +59,7 @@ struct Source {
   string_ref name;
   string_ref text;
   u8 *       storage;
+  bool       is_alive() { return storage != NULL; }
   void       init(string_ref name, string_ref text) {
     ASSERT_DEBUG(name.len != 0);
     storage = (u8 *)malloc(name.len + text.len + 2);
@@ -236,6 +237,15 @@ struct _Scene : public Scene {
     release();
     init();
   }
+  bool is_valid_name(char const *name) {
+    bool valid = false;
+    while (name[0] != '\0') {
+      if (name[0] < 0x20 || name[0] > 0x7f || name[0] == '"') return false;
+      valid = true;
+      name++;
+    }
+    return valid;
+  }
   void get_source_list(char const ***ptr, u32 *count) {
     ASSERT_DEBUG(count != NULL);
     ASSERT_DEBUG(ptr != NULL);
@@ -248,11 +258,19 @@ struct _Scene : public Scene {
   }
   void remove_source(char const *name) { sourcedb.remove_source(stref_s(name)); }
   void add_source(char const *name, char const *text) {
+    if (!is_valid_name(name)) {
+      push_warning("Source's name is invalid");
+      return;
+    }
     sourcedb.add_source(stref_s(name), stref_s(text));
   }
   u32 add_node(char const *name, char const *type_name, float x, float y, float size_x,
                float size_y) {
     if (name == NULL || type_name == NULL) return 0;
+    if (!is_valid_name(name)) {
+      push_warning("Node's name is invalid");
+      return 0;
+    }
     return nodedb.add_node(stref_s(name), stref_s(type_name), x, y, size_x, size_y);
   }
   void run_script(char const *src_name) {
@@ -306,6 +324,16 @@ struct _Scene : public Scene {
             node.size.x, node.size.y);
       }
     }
+    ito(sourcedb.sources.size) {
+      Source &src = sourcedb.sources[i];
+      if (!src.is_alive()) continue;
+      if (src.name == stref_s("init")) continue;
+      builder.push_fmt(                                   //
+          "  (add_source\n\"%.*s\"\n\"\"\"%.*s\"\"\")\n", //
+          STRF(src.name),                                 //
+          STRF(src.text)                                  //
+      );
+    }
     builder.push_fmt(                 //
         "  (move_camera %f %f %f)\n", //
         c2d.camera.pos.x, c2d.camera.pos.y, c2d.camera.pos.z);
@@ -337,6 +365,11 @@ struct _Scene : public Scene {
     static Pool<Symbol> &get_symbol_table() {
       static Pool<Symbol> symbol_table = Pool<Symbol>::create((1 << 10));
       return symbol_table;
+    }
+    void enter_scope() { get_symbol_table().enter_scope(); }
+    void exit_scope() { get_symbol_table().exit_scope(); }
+    void add_symbol(string_ref name, Value *val) {
+      get_symbol_table().push({.name = name, .val = val});
     }
     Value *lookup_symbol(string_ref name) {
       ito(get_symbol_table().cursor) {
@@ -405,6 +438,8 @@ struct _Scene : public Scene {
           new_val->type  = Value::Value_t::F32;
           return new_val;
         } else if (l->cmp_symbol("main")) {
+          enter_scope();
+          defer(exit_scope());
           List *cur = l->next;
           while (cur != NULL) {
             CALL_EVAL(cur);
@@ -424,8 +459,27 @@ struct _Scene : public Scene {
           EVAL_ASSERT(size_x != NULL && size_x->type == Value::Value_t::F32);
           Value *size_y = CALL_EVAL(l->get(6));
           EVAL_ASSERT(size_y != NULL && size_y->type == Value::Value_t::F32);
-          scene->add_node(stref_to_tmp_cstr(name->str), stref_to_tmp_cstr(type->str), x->f, y->f,
-                          size_x->f, size_y->f);
+          u32 id = scene->add_node(stref_to_tmp_cstr(name->str), stref_to_tmp_cstr(type->str), x->f,
+                                   y->f, size_x->f, size_y->f);
+          Value *new_val = ALLOC_VAL();
+          new_val->i     = id;
+          new_val->type  = Value::Value_t::I32;
+          return new_val;
+        } else if (l->cmp_symbol("add")) {
+          Value *op1 = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(op1 != NULL);
+          Value *op2 = CALL_EVAL(l->get(2));
+          EVAL_ASSERT(op2 != NULL);
+          EVAL_ASSERT(op1->type == op2->type);
+          if (op1->type == Value::Value_t::I32) {
+            Value *new_val = ALLOC_VAL();
+            new_val->i     = op1->i + op2->i;
+            new_val->type  = Value::Value_t::I32;
+            return new_val;
+          } else {
+            scene->push_warning("add: unsopported operand types");
+            eval_error = true;
+          }
           return NULL;
         } else if (l->cmp_symbol("add_source")) {
           Value *name = CALL_EVAL(l->get(1));
@@ -433,6 +487,48 @@ struct _Scene : public Scene {
           Value *text = CALL_EVAL(l->get(2));
           EVAL_ASSERT(text != NULL && text->type == Value::Value_t::SYMBOL);
           scene->add_source(stref_to_tmp_cstr(name->str), stref_to_tmp_cstr(text->str));
+          return NULL;
+        } else if (l->cmp_symbol("for")) {
+          Value *name = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(name != NULL && name->type == Value::Value_t::SYMBOL);
+          Value *lb = CALL_EVAL(l->get(2));
+          EVAL_ASSERT(lb != NULL && lb->type == Value::Value_t::I32);
+          Value *ub = CALL_EVAL(l->get(3));
+          EVAL_ASSERT(ub != NULL && ub->type == Value::Value_t::I32);
+          Value *new_val = ALLOC_VAL();
+          new_val->i     = 0;
+          new_val->type  = Value::Value_t::I32;
+          for (i32 i = lb->i; i < ub->i; i++) {
+            enter_scope();
+            new_val->i = i;
+            add_symbol(name->str, new_val);
+            CALL_EVAL(l->get(4));
+            exit_scope();
+          }
+          return NULL;
+        } else if (l->cmp_symbol("get_num_nodes")) {
+          Value *new_val = ALLOC_VAL();
+          new_val->i     = (i32)scene->nodedb.nodes.size;
+          new_val->type  = Value::Value_t::I32;
+          return new_val;
+        } else if (l->cmp_symbol("is_node_alive")) {
+          Value *new_val = ALLOC_VAL();
+          Value *index   = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(index != NULL && index->type == Value::Value_t::I32);
+          new_val->i    = (scene->nodedb.nodes[index->i - 1].is_alive() ? 1 : 0);
+          new_val->type = Value::Value_t::I32;
+          return new_val;
+        } else if (l->cmp_symbol("print")) {
+          Value *str = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(str != NULL && str->type == Value::Value_t::SYMBOL);
+          scene->push_debug_message("%.*s", STRF(str->str));
+          return NULL;
+        } else if (l->cmp_symbol("let")) {
+          Value *name = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(name != NULL && name->type == Value::Value_t::SYMBOL);
+          Value *val = CALL_EVAL(l->get(2));
+          EVAL_ASSERT(val != NULL);
+          add_symbol(name->str, val);
           return NULL;
         } else if (l->cmp_symbol("move_camera")) {
           Value *x = CALL_EVAL(l->get(1));
@@ -478,7 +574,6 @@ struct _Scene : public Scene {
                   } else if (c[1] == 's') {
                     EVAL_ASSERT(val != NULL && val->type == Value::Value_t::SYMBOL);
                     num_chars = sprintf(tmp_buf + cursor, "%.*s", (i32)val->str.len, val->str.ptr);
-                    num_chars -= 1;
                   } else {
                     eval_error = true;
                     scene->push_error("[format] Unknown format: %%%c", c[1]);
@@ -509,10 +604,11 @@ struct _Scene : public Scene {
             return new_val;
           }
         } else {
-          //          eval_error = true;
-          //          scene->push_error("[format] Unknown symbol: \"%.*s\"", (i32)l->symbol.len,
-          //          l->symbol.ptr); return NULL;
           EVAL_ASSERT(l->nonempty());
+          Value *sym = lookup_symbol(l->symbol);
+          if (sym != NULL) {
+            return sym;
+          }
           Value *new_val = ALLOC_VAL();
           new_val->str   = l->symbol;
           new_val->type  = Value::Value_t::SYMBOL;
