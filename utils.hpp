@@ -4,7 +4,6 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #if __linux__
 // UNIX headers
@@ -13,6 +12,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 #endif
+
+extern "C" void  abort();
+extern "C" void *malloc(size_t);
+extern "C" void  free(void *);
 
 #define ASSERT_ALWAYS(x)                                                                           \
   do {                                                                                             \
@@ -31,6 +34,7 @@
 #undef MAX
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define OFFSETOF(class, field) ((size_t)&(((class*)0)->field))
 
 using u64 = uint64_t;
 using u32 = uint32_t;
@@ -263,6 +267,16 @@ template <typename T = uint8_t> struct Pool {
     this->cursor       = 0;
     this->stack_cursor = 0;
   }
+
+  T *put(T const *old_ptr, size_t count) {
+    T *new_ptr = alloc(count);
+    memcpy(new_ptr, old_ptr, count * sizeof(T));
+    return new_ptr;
+  }
+
+  bool has_space(size_t size) {
+    return cursor + size <= capacity;
+  }
 };
 
 template <typename T = u8> using Temporary_Storage = Pool<T>;
@@ -438,8 +452,9 @@ static inline char *read_file_tmp(char const *filename) {
   return data;
 }
 
-static inline void ATTR_USED write_image_2d_i32_ppm(const char *file_name, void *data, uint32_t pitch,
-                                             uint32_t width, uint32_t height) {
+static inline void ATTR_USED write_image_2d_i32_ppm(const char *file_name, void *data,
+                                                    uint32_t pitch, uint32_t width,
+                                                    uint32_t height) {
   FILE *file = fopen(file_name, "wb");
   ASSERT_ALWAYS(file);
   fprintf(file, "P6\n");
@@ -465,8 +480,9 @@ static inline void ATTR_USED write_image_2d_i32_ppm(const char *file_name, void 
   fclose(file);
 }
 
-static inline void ATTR_USED write_image_2d_i24_ppm(const char *file_name, void *data, uint32_t pitch,
-                                             uint32_t width, uint32_t height) {
+static inline void ATTR_USED write_image_2d_i24_ppm(const char *file_name, void *data,
+                                                    uint32_t pitch, uint32_t width,
+                                                    uint32_t height) {
   FILE *file = fopen(file_name, "wb");
   ASSERT_ALWAYS(file);
   fprintf(file, "P6\n");
@@ -485,8 +501,9 @@ static inline void ATTR_USED write_image_2d_i24_ppm(const char *file_name, void 
   fclose(file);
 }
 
-static inline void ATTR_USED write_image_2d_i8_ppm(const char *file_name, void *data, uint32_t pitch,
-                                            uint32_t width, uint32_t height) {
+static inline void ATTR_USED write_image_2d_i8_ppm(const char *file_name, void *data,
+                                                   uint32_t pitch, uint32_t width,
+                                                   uint32_t height) {
   FILE *file = fopen(file_name, "wb");
   ASSERT_ALWAYS(file);
   fprintf(file, "P6\n");
@@ -611,32 +628,31 @@ template <typename T, size_t grow_k = 0x100, typename Allcator_t = Default_Alloc
 };
 
 template <typename T, u32 N, typename Allcator_t = Default_Allocator> struct SmallArray {
-  T                           _local[N];
-  size_t                      _size;
-  Array<T, N * 3, Allcator_t> _array;
+  T                           local[N];
+  size_t                      size;
+  Array<T, N * 3, Allcator_t> array;
   void                        init() {
     memset(this, 0, sizeof(*this));
-    _array.init();
+    array.init();
   }
   void release() {
-    _array.release();
+    array.release();
     memset(this, 0, sizeof(*this));
   }
   T &operator[](size_t i) {
     if (i < N)
-      return _local[i];
+      return local[i];
     else
-      return _array[i - N];
+      return array[i - N];
   }
   void push(T const &val) {
-    if (_size < N) {
-      _local[_size++] = val;
+    if (size < N) {
+      local[size++] = val;
     } else {
-      _array.push(val);
-      _size++;
+      array.push(val);
+      size++;
     }
   }
-  size_t get_size() { return _size; }
 };
 
 template <typename K, typename Allcator_t = Default_Allocator, size_t grow_k = 0x100,

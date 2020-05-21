@@ -584,14 +584,34 @@ int main() {
     char const *source = R"(
 (main
   (let node_1 (add_node "new node 2" "Gfx/DrawCall"))
-  (set_node_position node_1 8.391430 17.581839)
+  (set_node_position node_1 9.588463 17.069744)
   (set_node_size node_1 1.000000 1.000000)
   (let node_2 (add_node "new node #" "Gfx/DrawCall"))
-  (set_node_position node_2 17.449059 28.284681)
+  (set_node_position node_2 11.602905 16.031878)
   (set_node_size node_2 10.000000 1.000000)
-  (let node_4 (add_node "new node 1" "Gfx/DrawCall"))
-  (set_node_position node_4 27.550756 9.346700)
+  (let node_3 (add_node "new node 1" "Gfx/DrawCall"))
+  (set_node_position node_3 7.222641 16.966246)
+  (set_node_size node_3 1.000000 1.000000)
+  (let node_4 (add_node "auto node" "Gfx/DrawCall"))
+  (set_node_position node_4 18.014631 11.435676)
   (set_node_size node_4 1.000000 1.000000)
+  (let node_4_in_1 (add_input_slot node_4 "input"))
+  (let node_4_out_1 (add_output_slot node_4 "output"))
+  (let node_4_out_2 (add_output_slot node_4 "fesfse"))
+  (let node_5 (add_node "auto node 1" "Gfx/DrawCall"))
+  (set_node_position node_5 11.354731 7.701648)
+  (set_node_size node_5 1.000000 1.000000)
+  (let node_5_in_1 (add_input_slot node_5 "input"))
+  (let node_5_out_1 (add_output_slot node_5 "output"))
+  (let node_5_out_2 (add_output_slot node_5 "fesfse"))
+  (let node_6 (add_node "auto node 2" "Gfx/DrawCall"))
+  (set_node_position node_6 18.024921 12.770816)
+  (set_node_size node_6 1.000000 1.000000)
+  (let node_6_in_1 (add_input_slot node_6 "input"))
+  (let node_6_out_1 (add_output_slot node_6 "output"))
+  (let node_6_out_2 (add_output_slot node_6 "fesfse"))
+  (add_link node_5 node_5_out_2 node_6 node_6_in_1)
+  (add_link node_5 node_5_out_2 node_4 node_4_in_1)
   (add_source
 "simple.vs.glsl"
 """#version 300 es
@@ -623,13 +643,10 @@ void main() {
 }
 """)
   (add_source
-"dump_nodes.lil"
+"test_create_node_grid.lil"
 """
 
 (main
-  (add_node "new node 1" "Gfx/DrawCall" -6.409513 27.993538 1.000000 1.000000)
-  (set_node_position 2 18.935884 31.176182)
-  (set_node_size 2 10.000000 1.000000)
   (for i 0 100
     (for j 0 100
       (let node_id
@@ -655,9 +672,47 @@ void main() {
 )
 
 """)
-  (move_camera 17.964195 19.441189 43.980461)
+  (add_source
+"test_add_links.lil"
+"""
+(main
+  (scope
+    (let                node_1 (add_node "auto node 1" "Gfx/DrawCall"))
+    (set_node_position  node_1 0.391430 0.581839)
+    (set_node_size      node_1 1.000000 1.000000)
+    (add_input_slot     node_1 "input")
+    (add_output_slot    node_1 "output")
+    (let slot_1 (add_output_slot    node_1 "fesfse"))
+    (let                node_2 (add_node "auto node 2" "Gfx/DrawCall"))
+    (set_node_position  node_2 0.391430 0.581839)
+    (set_node_size      node_2 1.000000 1.000000)
+    (let slot_2 (add_input_slot     node_2 "input"))
+    (add_output_slot    node_2 "output")
+    (add_output_slot    node_2 "fesfse")
+    (add_link node_1 slot_1 node_2 slot_2)
+  )
+  (scope
+
+  )
+)
+""")
+  (add_source
+"test_add_links_2.lil"
+"""
+(main
+  (scope
+    (let                node_1 (get_node_id "auto node 1"))
+    (let                node_2 (get_node_id "auto node 2"))
+    (add_link node_2 2 node_1 1)
+  )
+  (scope
+
+  )
 )
 
+""")
+  (move_camera 17.778940 11.236901 20.067703)
+)
     )";
     Scene::get_scene()->add_source("init", source);
     Scene::get_scene()->run_script("init");

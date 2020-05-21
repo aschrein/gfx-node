@@ -43,13 +43,16 @@ static char const *node_type_to_str(Node_t type) {
 
 struct Node {
   //
+  // +-- pos
+  // |
+  // V
   // +-------+ ^
   // |       | |
-  // |   +   | | size.y * 2
+  // |   +   | | size.y
   // |   pos | |
   // +-------+ V
   // <------->
-  //   size.x * 2
+  //   size.x
   //
   u32    id;
   u32    num_in_slots;
@@ -62,10 +65,10 @@ struct Node {
   bool hovered;
   bool dragged;
   bool inside(float x, float y) {
-    return x > pos.x - size.x && //
+    return x > pos.x && //
            x < pos.x + size.x && //
            y > pos.y - size.y && //
-           y < pos.y + size.y;
+           y < pos.y;
   }
   bool is_alive() { return id > 0; }
   u32  get_index() { return id - 1; }

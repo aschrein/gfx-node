@@ -3,7 +3,7 @@
 #include "script.hpp"
 #include "simplefont.h"
 
-//static inline u16 f32_to_u16(f32 x) { return (u16)(clamp(x, 0.0f, 1.0f) * ((1 << 16) - 1)); }
+// static inline u16 f32_to_u16(f32 x) { return (u16)(clamp(x, 0.0f, 1.0f) * ((1 << 16) - 1)); }
 
 static inline float3 parse_color_float3(char const *str) {
   ASSERT_ALWAYS(str[0] == '#');
@@ -49,10 +49,11 @@ struct _String2D {
   bool     world_space;
 };
 // static Temporary_Storage<>          ts             = Temporary_Storage<>::create(16 * (1 << 20));
-static Temporary_Storage<Line2D>    line_storage   = Temporary_Storage<Line2D>::create(1 << 17);
-static Temporary_Storage<Rect2D>    quad_storage   = Temporary_Storage<Rect2D>::create(1 << 17);
-static Temporary_Storage<_String2D> string_storage = Temporary_Storage<_String2D>::create(1 << 18);
-static Temporary_Storage<char>      char_storage   = Temporary_Storage<char>::create(1 * (1 << 20));
+static Pool<Line2D>        line_storage   = Pool<Line2D>::create(1 << 17);
+static Pool<Rect2D>        quad_storage   = Pool<Rect2D>::create(1 << 17);
+static Pool<CubicBezier2D> bezier_storage = Pool<CubicBezier2D>::create(1 << 17);
+static Pool<_String2D>     string_storage = Pool<_String2D>::create(1 << 18);
+static Pool<char>          char_storage   = Pool<char>::create(1 * (1 << 20));
 
 struct Source {
   // Name and text are also zero terminated
@@ -141,17 +142,17 @@ struct SourceDB {
 
 struct NodeDB {
   struct Node_Wrapper {
-    u32                node_id;
-    string_ref         node_name;
-    SmallArray<u32, 8> out_links;
-    SmallArray<u32, 8> in_links;
-    void               init() {
-      out_links.init();
-      in_links.init();
+    u32                       node_id;
+    string_ref                node_name;
+    SmallArray<string_ref, 8> output_slots;
+    SmallArray<string_ref, 8> input_slots;
+    void                      init() {
+      output_slots.init();
+      input_slots.init();
     }
     void release() {
-      out_links.release();
-      in_links.release();
+      output_slots.release();
+      input_slots.release();
       memset(this, 0, sizeof(*this));
     }
   };
@@ -179,8 +180,32 @@ struct NodeDB {
     links.release();
     string_storage.release();
   }
+
+  string_ref move_cstr(string_ref old) {
+    if (!string_storage.has_space(old.len + 1)) {
+      rebuild_index();
+    }
+    char *     new_ptr = string_storage.put(old.ptr, old.len + 1);
+    string_ref new_ref = string_ref{.ptr = new_ptr, .len = old.len};
+    new_ptr[old.len]   = '\0';
+    return new_ref;
+  }
+  string_ref move_str(string_ref old) {
+    if (!string_storage.has_space(old.len + 1)) {
+      rebuild_index();
+    }
+    return string_ref{.ptr = string_storage.put(old.ptr, old.len), .len = old.len};
+  }
+
   void rebuild_index() {
-    auto new_string_storage = Pool<char>::create(1 << 20);
+    // not re-entrant
+    static bool rebuilding_index = false;
+    if (rebuilding_index) {
+      TRAP;
+    }
+    rebuilding_index        = true;
+    auto old_string_storage = string_storage;
+    string_storage          = Pool<char>::create(1 << 20);
     auto old_id2name        = id2name;
     id2name                 = Array<string_ref>();
     id2name.init();
@@ -191,19 +216,21 @@ struct NodeDB {
     ito(nodes.size) {
       Node &node = nodes[i];
       if (node.is_alive()) {
-        string_ref tmp_name = old_id2name[node.get_index()];
-        // zero terminated
-        char *name_ptr = new_string_storage.alloc(tmp_name.len + 1);
-        memcpy(name_ptr, tmp_name.ptr, tmp_name.len + 1);
-        string_ref new_name_ref = string_ref{.ptr = name_ptr, tmp_name.len};
+        string_ref new_name_ref = move_cstr(old_id2name[node.get_index()]);
         name2id.insert(new_name_ref, node.get_index());
         id2name[i]            = new_name_ref;
         wrappers[i].node_name = new_name_ref;
+        jto(wrappers[i].input_slots.size) {
+          wrappers[i].input_slots[j] = move_cstr(wrappers[i].input_slots[j]);
+        }
+        jto(wrappers[i].output_slots.size) {
+          wrappers[i].output_slots[j] = move_cstr(wrappers[i].output_slots[j]);
+        }
       }
     }
-    string_storage.release();
-    string_storage = new_string_storage;
+    old_string_storage.release();
     old_id2name.release();
+    rebuilding_index = false;
   }
   string_ref get_name(u32 id) {
     ASSERT_DEBUG(id > 0);
@@ -238,24 +265,14 @@ struct NodeDB {
     node.id     = nodes.size + 1;
     nodes.push(node);
     wrappers.push({});
-    {
-      char *name_ptr = string_storage.try_alloc(name.len + 1);
-      if (name_ptr == NULL) {
-        rebuild_index();
-      } else {
-        memcpy(name_ptr, name.ptr, name.len);
-        name_ptr[name.len]      = '\0';
-        string_ref new_name_ref = string_ref{.ptr = name_ptr, name.len};
-        name2id.insert(new_name_ref, node.get_index());
-        id2name.push(new_name_ref);
-        Node_Wrapper wrapper;
-        wrapper.init();
-        wrapper.node_id       = node.id;
-        wrapper.node_name     = new_name_ref;
-        wrappers[node.id - 1] = wrapper;
-      }
-    }
-
+    string_ref new_name_ref = move_cstr(name);
+    name2id.insert(new_name_ref, node.get_index());
+    id2name.push(new_name_ref);
+    Node_Wrapper wrapper;
+    wrapper.init();
+    wrapper.node_id       = node.id;
+    wrapper.node_name     = new_name_ref;
+    wrappers[node.id - 1] = wrapper;
     return node.id;
   }
   void set_node_position(string_ref name, float x, float y) {
@@ -272,15 +289,31 @@ struct NodeDB {
     nodes[id - 1].size.x = size_x;
     nodes[id - 1].size.y = size_y;
   }
+  u32 add_input_slot(u32 node_id, string_ref name) {
+    auto &s = wrappers[node_id - 1].input_slots;
+    s.push(move_cstr(name));
+    nodes[node_id - 1].num_in_slots++;
+    return s.size;
+  }
+  u32 add_output_slot(u32 node_id, string_ref name) {
+    auto &s = wrappers[node_id - 1].output_slots;
+    s.push(move_cstr(name));
+    nodes[node_id - 1].num_out_slots++;
+    return s.size;
+  }
   u32 add_link(u32 src_node_id, u32 src_slot_id, u32 dst_node_id, u32 dst_slot_id) {
     ASSERT_RETNULL(src_node_id > 0 && src_node_id <= nodes.size);
     ASSERT_RETNULL(dst_node_id > 0 && dst_node_id <= nodes.size);
-    Node &        src  = nodes[src_node_id];
-//    Node_Wrapper &wsrc = wrappers[src_node_id];
-    Node &        dst  = nodes[dst_node_id];
-//    Node_Wrapper &wdst = wrappers[dst_node_id];
+    Node &src = nodes[src_node_id - 1];
+    //    Node_Wrapper &wsrc = wrappers[src_node_id];
+    Node &dst = nodes[dst_node_id - 1];
+    //    Node_Wrapper &wdst = wrappers[dst_node_id];
     ASSERT_RETNULL(src_slot_id > 0 && src_slot_id <= src.num_out_slots);
     ASSERT_RETNULL(dst_slot_id > 0 && dst_slot_id <= dst.num_in_slots);
+    links.push(Link{.src_node_id = src_node_id,
+                    .src_slot_id = src_slot_id,
+                    .dst_node_id = dst_node_id,
+                    .dst_slot_id = dst_slot_id});
     return 0;
   }
 };
@@ -379,7 +412,8 @@ struct _Scene : public Scene {
     builder.init(1 << 20);
     builder.push_string("(main\n");
     ito(nodedb.nodes.size) {
-      Node &node = nodedb.nodes[i];
+      Node &                node  = nodedb.nodes[i];
+      NodeDB::Node_Wrapper &nodew = nodedb.wrappers[i];
       if (node.is_alive()) {
         builder.push_fmt(                                   //
             "  (let node_%i (add_node \"%.*s\" \"%s\"))\n", //
@@ -396,7 +430,30 @@ struct _Scene : public Scene {
             "  (set_node_size node_%i %f %f)\n", //
             node.id,                             //
             node.size.x, node.size.y);
+        jto(nodew.input_slots.size) {
+          builder.push_fmt(                                                //
+              "  (let node_%i_in_%i (add_input_slot node_%i \"%.*s\"))\n", //
+              node.id,                                                     //
+              j + 1,                                                       //
+              node.id,                                                     //
+              STRF(nodew.input_slots[j]));
+        }
+        jto(nodew.output_slots.size) {
+          builder.push_fmt(                                                  //
+              "  (let node_%i_out_%i (add_output_slot node_%i \"%.*s\"))\n", //
+              node.id,                                                       //
+              j + 1,                                                         //
+              node.id,                                                       //
+              STRF(nodew.output_slots[j]));
+        }
       }
+    }
+    ito(nodedb.links.size) {
+      Link &link = nodedb.links[i];
+      builder.push_fmt(                                                  //
+          "  (add_link node_%i node_%i_out_%i node_%i node_%i_in_%i)\n", //
+          link.src_node_id, link.src_node_id, link.src_slot_id, link.dst_node_id, link.dst_node_id,
+          link.dst_slot_id);
     }
     ito(sourcedb.sources.size) {
       Source &src = sourcedb.sources[i];
@@ -447,8 +504,9 @@ struct _Scene : public Scene {
     }
     Value *lookup_symbol(string_ref name) {
       ito(get_symbol_table().cursor) {
-        if (get_symbol_table().at(i)->name == name) {
-          return get_symbol_table().at(i)->val;
+        u32 index = get_symbol_table().cursor - 1 - i;
+        if (get_symbol_table().at(index)->name == name) {
+          return get_symbol_table().at(index)->val;
         }
       }
       return NULL;
@@ -546,12 +604,46 @@ struct _Scene : public Scene {
           EVAL_F32(y, 3);
           scene->nodedb.set_node_position(id->i, x->f, y->f);
           return NULL;
+        } else if (l->cmp_symbol("get_node_id")) {
+          EVAL_SMB(name, 1);
+          u32    id      = scene->nodedb.get_id(name->str);
+          Value *new_val = ALLOC_VAL();
+          new_val->i     = id;
+          new_val->type  = Value::Value_t::I32;
+          return new_val;
         } else if (l->cmp_symbol("set_node_size")) {
           EVAL_I32(id, 1);
           EVAL_F32(x, 2);
           EVAL_F32(y, 3);
           scene->nodedb.set_node_size(id->i, x->f, y->f);
           return NULL;
+        } else if (l->cmp_symbol("add_input_slot")) {
+          EVAL_I32(id, 1);
+          EVAL_SMB(name, 2);
+          u32    sid     = scene->nodedb.add_input_slot(id->i, name->str);
+          Value *new_val = ALLOC_VAL();
+          new_val->i     = sid;
+          new_val->type  = Value::Value_t::I32;
+          return new_val;
+        } else if (l->cmp_symbol("add_link")) {
+          EVAL_I32(src_node_id, 1);
+          EVAL_I32(src_slot_id, 2);
+          EVAL_I32(dst_node_id, 3);
+          EVAL_I32(dst_slot_id, 4);
+          u32    sid     = scene->nodedb.add_link(src_node_id->i, src_slot_id->i, dst_node_id->i,
+                                           dst_slot_id->i);
+          Value *new_val = ALLOC_VAL();
+          new_val->i     = sid;
+          new_val->type  = Value::Value_t::I32;
+          return new_val;
+        } else if (l->cmp_symbol("add_output_slot")) {
+          EVAL_I32(id, 1);
+          EVAL_SMB(name, 2);
+          u32    sid     = scene->nodedb.add_output_slot(id->i, name->str);
+          Value *new_val = ALLOC_VAL();
+          new_val->i     = sid;
+          new_val->type  = Value::Value_t::I32;
+          return new_val;
         } else if (l->cmp_symbol("itof")) {
           EVAL_I32(a, 1);
           Value *new_val = ALLOC_VAL();
@@ -579,7 +671,7 @@ struct _Scene : public Scene {
             eval_error = true;
           }
           return NULL;
-        }  else if (l->cmp_symbol("mul")) {
+        } else if (l->cmp_symbol("mul")) {
           Value *op1 = CALL_EVAL(l->get(1));
           EVAL_ASSERT(op1 != NULL);
           Value *op2 = CALL_EVAL(l->get(2));
@@ -627,6 +719,15 @@ struct _Scene : public Scene {
               CALL_EVAL(cur);
               cur = cur->next;
             }
+          }
+          return NULL;
+        } else if (l->cmp_symbol("scope")) {
+          enter_scope();
+          defer(exit_scope());
+          List *cur = l->get(1);
+          while (cur != NULL) {
+            CALL_EVAL(cur);
+            cur = cur->next;
           }
           return NULL;
         } else if (l->cmp_symbol("get_num_nodes")) {
@@ -788,10 +889,15 @@ struct _Scene : public Scene {
       if (m->button == 1) {
         ldown = true;
       }
+      if (selected_node >= 0) {
+        nodedb.nodes[selected_node].selected = false;
+      }
       ito(nodedb.nodes.size) {
         Node &node = nodedb.nodes[i];
         if (node.is_alive() && node.inside(c2d.camera.mouse_world_x, c2d.camera.mouse_world_y)) {
-          selected_node = i;
+
+          selected_node                        = i;
+          nodedb.nodes[selected_node].selected = true;
           return;
         }
       }
@@ -801,7 +907,7 @@ struct _Scene : public Scene {
     }
     case SDL_MOUSEBUTTONUP: {
       SDL_MouseButtonEvent *m = (SDL_MouseButtonEvent *)&event;
-      selected_node           = -1;
+      //      selected_node           = -1;
       if (m->button == 1) ldown = false;
       if (c2d.hovered) c2d.consume_event(event);
       break;
@@ -817,10 +923,10 @@ struct _Scene : public Scene {
     case SDL_MOUSEMOTION: {
       SDL_MouseMotionEvent *m = (SDL_MouseMotionEvent *)&event;
       if (c2d.hovered) c2d.consume_event(event);
-//      int    dx = m->x - old_mp_x;
-//      int    dy = m->y - old_mp_y;
-//      float2 wd = c2d.camera.window_to_world({m->x, m->y}) -
-//                  c2d.camera.window_to_world({old_mp_x, old_mp_y});
+      //      int    dx = m->x - old_mp_x;
+      //      int    dy = m->y - old_mp_y;
+      //      float2 wd = c2d.camera.window_to_world({m->x, m->y}) -
+      //                  c2d.camera.window_to_world({old_mp_x, old_mp_y});
       old_mp_x          = m->x;
       old_mp_y          = m->y;
       float wmdx        = c2d.camera.mouse_world_x - old_mouse_world_x;
@@ -847,21 +953,47 @@ void Scene::draw() {
   scene->new_frame();
   line_storage.enter_scope();
   quad_storage.enter_scope();
+  bezier_storage.enter_scope();
   string_storage.enter_scope();
   char_storage.enter_scope();
   TMP_STORAGE_SCOPE
   c2d.imcanvas_start();
   defer({ c2d.imcanvas_end(); });
-  u32    W               = 256;
-  u32    H               = 256;
-  float  dx              = 1.0f;
-  float  dy              = 1.0f;
-  float  size_x          = 256.0f;
-  float  size_y          = 256.0f;
-  float  GRID_LAYER      = 2.0f / 256.0f;
-  float  NODE_BG_LAYER   = 10.0f / 256.0f;
-  float  NODE_NAME_LAYER = 11.0f / 256.0f;
+  u32   W               = 256;
+  u32   H               = 256;
+  float dx              = 1.0f;
+  float dy              = 1.0f;
+  float size_x          = 256.0f;
+  float size_y          = 256.0f;
+  float GRID_LAYER      = 2.0f / 256.0f;
+  float NODE_BG_LAYER   = 10.0f / 256.0f;
+  float SLOT_BG_LAYER   = 11.0f / 256.0f;
+  float SELECTION_LAYER = 12.0f / 256.0f;
+
+  float  NODE_NAME_LAYER = 20.0f / 256.0f;
+  float  SLOT_NAME_LAYER = 20.0f / 256.0f;
+  float  SLOT_PADDING_Y  = 0.2f;
+  float  SLOT_PADDING_X  = 0.01f;
+  float  SLOT_MARGIN     = 0.04f;
+  float  SLOT_SIZE       = 0.1f;
   float3 grid_color      = parse_color_float3(dark_mode::g_grid_color);
+  //  ito(100) {
+  //    jto(100) {
+  //      float x = j * 2.0f;
+  //      float y = i * 2.0f;
+  //      c2d.draw_bezier(CubicBezier2D{.x0    = x + 0.0f,                       //
+  //                                    .y0    = y + 0.0f,                       //
+  //                                    .x1    = x + 1.0f,                       //
+  //                                    .y1    = y + 1.0f,                       //
+  //                                    .x2    = x + 1.0f,                       //
+  //                                    .y2    = y + -1.0f,                      //
+  //                                    .x3    = x + std::sin(y / 10.0f) + 0.0f, //
+  //                                    .y3    = y + std::cos(x / 10.0f) + 1.0f, //
+  //                                    .z     = NODE_NAME_LAYER,
+  //                                    .width = c2d.camera.pos.z / c2d.viewport_height,
+  //                                    .color = {.r = 1.0f, .g = 0.0f, .b = 0.0f}});
+  //    }
+  //  }
   //  c2d.draw_string({//
   //                   .c_str = "hello world!",
   //                   .x     = c2d.camera.mouse_world_x,
@@ -894,22 +1026,108 @@ void Scene::draw() {
                    .z     = GRID_LAYER,
                    .color = {.r = grid_color.x, .g = grid_color.y, .b = grid_color.z}});
   }
+  auto get_slot_offset = [&](u32 node_id, u32 slot_id, bool in) {
+    Node &node = scene->nodedb.nodes[node_id - 1];
+    if (in) {
+      float x = SLOT_PADDING_X + node.pos.x;
+      float y = -SLOT_PADDING_Y + node.pos.y - (SLOT_SIZE + SLOT_MARGIN) * (float)(slot_id - 1) -
+                SLOT_SIZE * 0.5f;
+      return float2(x, y);
+    } else {
+      float x = -SLOT_PADDING_X + node.pos.x + node.size.x - SLOT_SIZE;
+      float y = -SLOT_PADDING_Y + node.pos.y - (SLOT_SIZE + SLOT_MARGIN) * (float)(slot_id - 1) -
+                SLOT_SIZE * 0.5f;
+      return float2(x, y);
+    }
+  };
+  ito(scene->nodedb.links.size) {
+    Link &link = scene->nodedb.links[i];
+    //    Node &src_node = scene->nodedb.nodes[link.src_node_id];
+    //    Node &dst_node = scene->nodedb.nodes[link.dst_node_id];
+    float2 p0   = get_slot_offset(link.src_node_id, link.src_slot_id, false);
+    float2 p1   = get_slot_offset(link.dst_node_id, link.dst_slot_id, true);
+    float  dist = glm::distance(p0, p1);
+    c2d.draw_bezier(CubicBezier2D{.x0    = p0.x,               //
+                                  .y0    = p0.y,               //
+                                  .x1    = p0.x + dist * 0.6f, //
+                                  .y1    = p0.y,               //
+                                  .x2    = p1.x - dist * 0.6f, //
+                                  .y2    = p1.y,               //
+                                  .x3    = p1.x,               //
+                                  .y3    = p1.y,               //
+                                  .z     = NODE_NAME_LAYER,
+                                  .width = c2d.camera.pos.z / c2d.viewport_height,
+                                  .color = {.r = 1.0f, .g = 0.0f, .b = 0.0f}});
+  }
   ito(scene->nodedb.nodes.size) {
-    Node &node = scene->nodedb.nodes[i];
+    Node &                node  = scene->nodedb.nodes[i];
+    NodeDB::Node_Wrapper &nodew = scene->nodedb.wrappers[i];
     if (node.is_alive()) {
-      c2d.draw_string({//
-                       .c_str = scene->nodedb.get_name(node.id).ptr,
-                       .x     = node.pos.x,
-                       .y     = node.pos.y,
-                       .z     = NODE_NAME_LAYER,
-                       .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
+      if (!c2d.camera.intersects(       //
+              node.pos.x,               //
+              node.pos.y - node.size.y, //
+              node.pos.x + node.size.x, //
+              node.pos.y                //
+              ))
+        continue;
+      if (c2d.camera.pos.z < 100.0f)
+        c2d.draw_string({//
+                         .c_str = scene->nodedb.get_name(node.id).ptr,
+                         .x     = node.pos.x,
+                         .y     = node.pos.y,
+                         .z     = NODE_NAME_LAYER,
+                         .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
       c2d.draw_rect({//
-                     .x      = node.pos.x - node.size.x,
+                     .x      = node.pos.x,
                      .y      = node.pos.y - node.size.y,
                      .z      = NODE_BG_LAYER,
-                     .width  = node.size.x * 2.0f,
-                     .height = node.size.y * 2.0f,
+                     .width  = node.size.x,
+                     .height = node.size.y,
                      .color  = {.r = 0.5f, .g = 0.5f, .b = 0.5f}});
+      if (node.selected) {
+        float SELECTION_OFFSET = 0.01f * c2d.camera.pos.z;
+        c2d.draw_line_rect(node.pos.x - SELECTION_OFFSET,               //
+                           node.pos.y + SELECTION_OFFSET,               //
+                           node.pos.x + node.size.x + SELECTION_OFFSET, //
+                           node.pos.y - node.size.y - SELECTION_OFFSET, //
+                           SELECTION_LAYER, {.r = 0.8f, .g = 0.4f, .b = 0.3f});
+      }
+      jto(nodew.input_slots.size) {
+        float x = SLOT_PADDING_X + node.pos.x;
+        float y = -SLOT_PADDING_Y + node.pos.y - (SLOT_SIZE + SLOT_MARGIN) * (float)j;
+        if (c2d.camera.pos.z < 100.0f)
+          c2d.draw_string({//
+                           .c_str = nodew.input_slots[j].ptr,
+                           .x     = x,
+                           .y     = y - SLOT_SIZE,
+                           .z     = SLOT_NAME_LAYER,
+                           .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
+        c2d.draw_rect({//
+                       .x      = x,
+                       .y      = y - SLOT_SIZE,
+                       .z      = SLOT_BG_LAYER,
+                       .width  = SLOT_SIZE,
+                       .height = SLOT_SIZE,
+                       .color  = {.r = 0.6f, .g = 0.4f, .b = 0.3f}});
+      }
+      jto(nodew.output_slots.size) {
+        float x = -SLOT_PADDING_X + node.pos.x + node.size.x - SLOT_SIZE;
+        float y = -SLOT_PADDING_Y + node.pos.y - (SLOT_SIZE + SLOT_MARGIN) * (float)j;
+        if (c2d.camera.pos.z < 100.0f)
+          c2d.draw_string({//
+                           .c_str = nodew.output_slots[j].ptr,
+                           .x     = x,
+                           .y     = y - SLOT_SIZE,
+                           .z     = SLOT_NAME_LAYER,
+                           .color = {.r = 1.0f, .g = 1.0f, .b = 1.0f}});
+        c2d.draw_rect({//
+                       .x      = x,
+                       .y      = y - SLOT_SIZE,
+                       .z      = SLOT_BG_LAYER,
+                       .width  = SLOT_SIZE,
+                       .height = SLOT_SIZE,
+                       .color  = {.r = 0.6f, .g = 0.4f, .b = 0.3f}});
+      }
     }
   }
 }
@@ -968,11 +1186,13 @@ void Context2D::flush_rendering() {
   render_stuff();
   line_storage.exit_scope();
   quad_storage.exit_scope();
+  bezier_storage.exit_scope();
   string_storage.exit_scope();
   char_storage.exit_scope();
 }
 void Context2D::draw_rect(Rect2D p) { quad_storage.push(p); }
 void Context2D::draw_line(Line2D l) { line_storage.push(l); }
+void Context2D::draw_bezier(CubicBezier2D l) { bezier_storage.push(l); }
 void Context2D::draw_string(String2D s) {
   size_t len = strlen(s.c_str);
   if (len == 0) return;
@@ -1232,13 +1452,61 @@ void Context2D::render_stuff() {
   void main() {
     SV_TARGET0 = vec4(color, 1.0);
   })";
-    static GLuint line_program = create_program(line_vs, line_ps);
-    static GLuint quad_program = create_program(quad_vs, quad_ps);
+
+    // Bezier curve using triangle strip
+    //  0  2  4
+    //  +--+--+..
+    //  | /| /|
+    //  |/ |/ |
+    //  +--+--+..
+    //  1  3  5
+
+    const GLchar *bezier_vs =
+        R"(#version 300 es
+  precision highp float;
+
+  layout (location = 0) in vec4 instance_pos1;
+  layout (location = 1) in vec4 instance_pos2;
+  layout (location = 2) in vec4 instance_color;
+  layout (location = 3) in vec2 instance_width_layer;
+
+  out vec3 color;
+  uniform mat4 projection;
+  uniform int LOD;
+  void main() {
+      vec2 vertex_position;
+      vertex_position.x = float(int(gl_VertexID) / 2) / float(LOD);
+      vertex_position.y = float(int(gl_VertexID) & 1) * 2.0 - 1.0;
+      color = instance_color.xyz;
+      float width = instance_width_layer.x;
+      float t = vertex_position.x;
+      vec2 p = pow(1.0 - t, 3.0) * instance_pos1.xy + 3.0 * pow(1.0 - t, 2.0) * t * instance_pos1.zw +
+             3.0 * (1.0 - t) * t * t * instance_pos2.xy + t * t * t * instance_pos2.zw;
+      vec2 n = 3.0 * pow(1.0 - t, 2.0) * (instance_pos1.zw - instance_pos1.xy) +
+             6.0 * (1.0 - t) * t * (instance_pos2.xy - instance_pos1.zw) +
+             3.0 * t * t * (instance_pos2.zw - instance_pos2.xy);
+      n = normalize(n);
+      p += vec2(-n.y, n.x) * vertex_position.y * width;
+      gl_Position = vec4(p, instance_width_layer.y, 1.0) * projection;
+  })";
+    const GLchar *bezier_ps =
+        R"(#version 300 es
+        precision highp float;
+  layout(location = 0) out vec4 SV_TARGET0;
+  in vec3 color;
+  void main() {
+    SV_TARGET0 = vec4(color, 1.0);
+  })";
+    static GLuint line_program   = create_program(line_vs, line_ps);
+    static GLuint quad_program   = create_program(quad_vs, quad_ps);
+    static GLuint bezier_program = create_program(bezier_vs, bezier_ps);
     static GLuint line_vao;
     static GLuint line_vbo;
     static GLuint quad_vao;
     static GLuint quad_vbo;
     static GLuint quad_instance_vbo;
+    static GLuint bezier_vao;
+    static GLuint bezier_instance_vbo;
     static int    init_va0 = [&] {
       glGenVertexArrays(1, &line_vao);
       glBindVertexArray(line_vao);
@@ -1262,12 +1530,105 @@ void Context2D::render_stuff() {
       glGenBuffers(1, &quad_instance_vbo);
       glBindBuffer(GL_ARRAY_BUFFER, quad_instance_vbo);
 
+      glGenVertexArrays(1, &bezier_vao);
+      glBindVertexArray(bezier_vao);
+
+      glGenBuffers(1, &bezier_instance_vbo);
+      glBindBuffer(GL_ARRAY_BUFFER, bezier_instance_vbo);
+
       glBindVertexArray(0);
       glBindBuffer(GL_ARRAY_BUFFER, 0);
 
       return 0;
     }();
     (void)init_va0;
+    if (bezier_storage.cursor != 0) {
+      glUseProgram(bezier_program);
+      u32 BEZIER_LOD = (u32)MAX(8, MIN(128, (i32)(128.0f - 2.0f * camera.pos.z)));
+      glUniformMatrix4fv(glGetUniformLocation(bezier_program, "projection"), 1, GL_FALSE,
+                         (float *)&camera.proj[0]);
+      glUniform1i(glGetUniformLocation(bezier_program, "LOD"), BEZIER_LOD);
+      glBindVertexArray(bezier_vao);
+      glBindBuffer(GL_ARRAY_BUFFER, bezier_instance_vbo);
+      struct Bezier_Instance_GL {
+        float x0, y0;
+        float x1, y1;
+        float x2, y2;
+        float x3, y3;
+        float r, g, b, a;
+        float width;
+        float z;
+      };
+      static_assert(sizeof(Bezier_Instance_GL) == 56, "");
+      uint32_t max_num_beziers = bezier_storage.cursor;
+      uint32_t num_beziers     = 0;
+      TMP_STORAGE_SCOPE;
+      Bezier_Instance_GL *qinstances =
+          (Bezier_Instance_GL *)tl_alloc_tmp(sizeof(Bezier_Instance_GL) * max_num_beziers);
+      ito(max_num_beziers) {
+        CubicBezier2D b2d   = *bezier_storage.at(i);
+        float         min_x = MIN(b2d.x0, MIN(b2d.x1, MIN(b2d.x2, b2d.x3)));
+        float         min_y = MIN(b2d.y0, MIN(b2d.y1, MIN(b2d.y2, b2d.y3)));
+        float         max_x = MAX(b2d.x0, MAX(b2d.x1, MAX(b2d.x2, b2d.x3)));
+        float         max_y = MAX(b2d.y0, MAX(b2d.y1, MAX(b2d.y2, b2d.y3)));
+        if (!camera.intersects(min_x, min_y, max_x, max_y)) continue;
+
+        Bezier_Instance_GL b2dgl;
+        b2dgl.x0                  = b2d.x0;
+        b2dgl.x1                  = b2d.x1;
+        b2dgl.x2                  = b2d.x2;
+        b2dgl.x3                  = b2d.x3;
+        b2dgl.y0                  = b2d.y0;
+        b2dgl.y1                  = b2d.y1;
+        b2dgl.y2                  = b2d.y2;
+        b2dgl.y3                  = b2d.y3;
+        b2dgl.r                   = b2d.color.r;
+        b2dgl.g                   = b2d.color.g;
+        b2dgl.b                   = b2d.color.b;
+        b2dgl.width               = b2d.width;
+        b2dgl.z                   = b2d.z;
+        qinstances[num_beziers++] = b2dgl;
+      }
+      if (num_beziers == 0) goto skip_bezier;
+      //      PUSH_DEBUG("Visible bezier curves: %i", num_beziers);
+      //      PUSH_DEBUG("Vertices/Frame: %i", num_beziers * (BEZIER_LOD + 1) * 2);
+      glBufferData(GL_ARRAY_BUFFER, sizeof(Bezier_Instance_GL) * num_beziers, qinstances,
+                   GL_DYNAMIC_DRAW);
+
+      glEnableVertexAttribArray(0);
+      glVertexAttribDivisor(0, 1);
+      glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, sizeof(Bezier_Instance_GL),
+                            (void *)OFFSETOF(Bezier_Instance_GL, x0));
+
+      glEnableVertexAttribArray(1);
+      glVertexAttribDivisor(1, 1);
+      glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(Bezier_Instance_GL),
+                            (void *)OFFSETOF(Bezier_Instance_GL, x2));
+
+      glEnableVertexAttribArray(2);
+      glVertexAttribDivisor(2, 1);
+      glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, sizeof(Bezier_Instance_GL),
+                            (void *)OFFSETOF(Bezier_Instance_GL, r));
+
+      glEnableVertexAttribArray(3);
+      glVertexAttribDivisor(3, 1);
+      glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(Bezier_Instance_GL),
+                            (void *)OFFSETOF(Bezier_Instance_GL, width));
+
+      glDrawArraysInstanced(GL_TRIANGLE_STRIP, 0, (BEZIER_LOD + 1) * 2, num_beziers);
+
+      glBindVertexArray(0);
+      glBindBuffer(GL_ARRAY_BUFFER, 0);
+      glDisableVertexAttribArray(0);
+      glDisableVertexAttribArray(1);
+      glDisableVertexAttribArray(2);
+      glDisableVertexAttribArray(3);
+      glVertexAttribDivisor(0, 0);
+      glVertexAttribDivisor(1, 0);
+      glVertexAttribDivisor(2, 0);
+      glVertexAttribDivisor(3, 0);
+    }
+  skip_bezier:
     // Draw quads
     if (quad_storage.cursor != 0) {
       glUseProgram(quad_program);
@@ -1507,8 +1868,8 @@ void Context2D::render_stuff() {
         float r, g, b;
       };
       static_assert(sizeof(Glyph_Instance_GL) == 32, "");
-      float    glyph_uv_width  = (float)simplefont_bitmap_glyphs_width / simplefont_bitmap_width;
-      float    glyph_uv_height = (float)simplefont_bitmap_glyphs_height / simplefont_bitmap_height;
+      float glyph_uv_width  = (float)simplefont_bitmap_glyphs_width / simplefont_bitmap_width;
+      float glyph_uv_height = (float)simplefont_bitmap_glyphs_height / simplefont_bitmap_height;
 
       float      glyph_pad_ss   = 2.0f / viewport_width;
       uint32_t   max_num_glyphs = 0;
@@ -1647,79 +2008,79 @@ void Context2D::render_stuff() {
 //  }
 //}
 
-GLuint initShader() {
-  const GLchar *vertexSource =
-      R"(#version 300 es
-  precision highp float;
-  layout (location=0) in vec3 position;
-  out vec3 color;
-  void main() {
-      color = position;
-      gl_Position = vec4(position, 1.0);
+// GLuint initShader() {
+//  const GLchar *vertexSource =
+//      R"(#version 300 es
+//  precision highp float;
+//  layout (location=0) in vec3 position;
+//  out vec3 color;
+//  void main() {
+//      color = position;
+//      gl_Position = vec4(position, 1.0);
 
-  })";
+//  })";
 
-  // Fragment/pixel shader
-  const GLchar *fragmentSource =
-      R"(#version 300 es
-  precision highp float;
-  in vec3 color;
-  layout(location = 0) out vec4 SV_TARGET0;
+//  // Fragment/pixel shader
+//  const GLchar *fragmentSource =
+//      R"(#version 300 es
+//  precision highp float;
+//  in vec3 color;
+//  layout(location = 0) out vec4 SV_TARGET0;
 
-  void main() {
-    SV_TARGET0 = vec4(color, 1.0);
-  })";
-  // Create and compile vertex shader
-  GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
-  glShaderSource(vertexShader, 1, &vertexSource, NULL);
-  compile_shader(vertexShader);
+//  void main() {
+//    SV_TARGET0 = vec4(color, 1.0);
+//  })";
+//  // Create and compile vertex shader
+//  GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+//  glShaderSource(vertexShader, 1, &vertexSource, NULL);
+//  compile_shader(vertexShader);
 
-  // Create and compile fragment shader
-  GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
-  glShaderSource(fragmentShader, 1, &fragmentSource, NULL);
-  compile_shader(fragmentShader);
+//  // Create and compile fragment shader
+//  GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+//  glShaderSource(fragmentShader, 1, &fragmentSource, NULL);
+//  compile_shader(fragmentShader);
 
-  // Link vertex and fragment shader into shader program and use it
-  GLuint program = glCreateProgram();
-  glAttachShader(program, vertexShader);
-  glAttachShader(program, fragmentShader);
-  link_program(program);
-  glDetachShader(program, vertexShader);
-  glDetachShader(program, fragmentShader);
-  glUseProgram(program);
-  glDeleteShader(vertexShader);
-  glDeleteShader(fragmentShader);
-  return program;
-}
+//  // Link vertex and fragment shader into shader program and use it
+//  GLuint program = glCreateProgram();
+//  glAttachShader(program, vertexShader);
+//  glAttachShader(program, fragmentShader);
+//  link_program(program);
+//  glDetachShader(program, vertexShader);
+//  glDetachShader(program, fragmentShader);
+//  glUseProgram(program);
+//  glDeleteShader(vertexShader);
+//  glDeleteShader(fragmentShader);
+//  return program;
+//}
 
-GLuint initGeometry(GLuint program) {
-  // Create vertex buffer object and copy vertex data into it
-  GLuint vao;
-  glGenVertexArrays(1, &vao);
-  glBindVertexArray(vao);
-  GLuint vbo;
-  glGenBuffers(1, &vbo);
-  glBindBuffer(GL_ARRAY_BUFFER, vbo);
-  GLfloat vertices[] = {0.0f, 0.5f, 0.0f, -0.5f, -0.5f, 0.0f, 0.5f, -0.5f, 0.0f};
-  glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+// GLuint initGeometry(GLuint program) {
+//  // Create vertex buffer object and copy vertex data into it
+//  GLuint vao;
+//  glGenVertexArrays(1, &vao);
+//  glBindVertexArray(vao);
+//  GLuint vbo;
+//  glGenBuffers(1, &vbo);
+//  glBindBuffer(GL_ARRAY_BUFFER, vbo);
+//  GLfloat vertices[] = {0.0f, 0.5f, 0.0f, -0.5f, -0.5f, 0.0f, 0.5f, -0.5f, 0.0f};
+//  glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
 
-  // Specify the layout of the shader vertex data (positions only, 3 floats)
-  GLint posAttrib = glGetAttribLocation(program, "position");
-  glEnableVertexAttribArray(posAttrib);
-  glVertexAttribPointer(posAttrib, 3, GL_FLOAT, GL_FALSE, 0, 0);
-  glBindVertexArray(0);
-  return vao;
-}
+//  // Specify the layout of the shader vertex data (positions only, 3 floats)
+//  GLint posAttrib = glGetAttribLocation(program, "position");
+//  glEnableVertexAttribArray(posAttrib);
+//  glVertexAttribPointer(posAttrib, 3, GL_FLOAT, GL_FALSE, 0, 0);
+//  glBindVertexArray(0);
+//  return vao;
+//}
 
-void redraw() {
-  GLuint program = initShader();
-  GLuint vao     = initGeometry(program);
-  glUseProgram(program);
-  glBindVertexArray(vao);
-  glDrawArrays(GL_TRIANGLES, 0, 3);
-  glDeleteProgram(program);
-  glDeleteVertexArrays(1, &vao);
-}
+// void redraw() {
+//  GLuint program = initShader();
+//  GLuint vao     = initGeometry(program);
+//  glUseProgram(program);
+//  glBindVertexArray(vao);
+//  glDrawArrays(GL_TRIANGLES, 0, 3);
+//  glDeleteProgram(program);
+//  glDeleteVertexArrays(1, &vao);
+//}
 
 // struct Console {
 //    char     buffer[0x100][0x100];

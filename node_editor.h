@@ -52,9 +52,9 @@ struct Oth_Camera {
   uint32_t glyph_scale = 1;
   void     update(u32 viewport_x, u32 viewport_y, u32 viewport_width, u32 viewport_height);
   float2   world_to_screen(float2 p) {
-    float  x0  = glm::dot(proj[0], (float4){p.x, p.y, 0.0f, 1.0f});
-    float  x1  = glm::dot(proj[1], (float4){p.x, p.y, 0.0f, 1.0f});
-//    float  x2  = glm::dot(proj[2], (float4){p.x, p.y, 0.0f, 1.0f});
+    float x0 = glm::dot(proj[0], (float4){p.x, p.y, 0.0f, 1.0f});
+    float x1 = glm::dot(proj[1], (float4){p.x, p.y, 0.0f, 1.0f});
+    //    float  x2  = glm::dot(proj[2], (float4){p.x, p.y, 0.0f, 1.0f});
     float  x3  = glm::dot(proj[3], (float4){p.x, p.y, 0.0f, 1.0f});
     float2 pos = (float2){x0, x1} / x3;
     return pos;
@@ -114,6 +114,15 @@ struct Rect2D {
   Color color;
   bool  world_space = true;
 };
+struct CubicBezier2D {
+  float x0, y0;
+  float x1, y1;
+  float x2, y2;
+  float x3, y3;
+  float z, width;
+  Color color;
+};
+// thin 1-pixel wide lines
 struct Line2D {
   float x0, y0, x1, y1, z;
   Color color;
@@ -128,9 +137,45 @@ struct String2D {
 
 struct Context2D {
   Oth_Camera camera;
-
-  void draw_rect(Rect2D p);
-  void draw_line(Line2D l);
+  void       draw_rect(Rect2D p);
+  void       draw_bezier(CubicBezier2D p);
+  void       draw_line(Line2D l);
+  void       draw_line_rect(float x0, float y0, //
+                            float x1, float y1, //
+                            float z, Color color) {
+    draw_line(Line2D{
+        .x0    = x0,   //
+        .y0    = y0,   //
+        .x1    = x1,   //
+        .y1    = y0,   //
+        .z     = z,    //
+        .color = color //
+    });
+    draw_line(Line2D{
+        .x0    = x1,   //
+        .y0    = y0,   //
+        .x1    = x1,   //
+        .y1    = y1,   //
+        .z     = z,    //
+        .color = color //
+    });
+    draw_line(Line2D{
+        .x0    = x1,   //
+        .y0    = y1,   //
+        .x1    = x0,   //
+        .y1    = y1,   //
+        .z     = z,    //
+        .color = color //
+    });
+    draw_line(Line2D{
+        .x0    = x0,   //
+        .y0    = y1,   //
+        .x1    = x0,   //
+        .y1    = y0,   //
+        .z     = z,    //
+        .color = color //
+    });
+  }
   void draw_string(String2D s);
   void imcanvas_start();
   void flush_rendering();
@@ -175,12 +220,12 @@ struct Scene {
 };
 
 #define PUSH_WARNING(fmt, ...) Scene::get_scene()->push_warning(fmt, __VA_ARGS__)
-#define PUSH_ERROR(fmt, ...) Scene::get_scene()->push_warning(fmt, __VA_ARGS__)
-#define PUSH_DEBUG(fmt, ...) Scene::get_scene()->push_warning(fmt, __VA_ARGS__)
+#define PUSH_ERROR(fmt, ...) Scene::get_scene()->push_error(fmt, __VA_ARGS__)
+#define PUSH_DEBUG(fmt, ...) Scene::get_scene()->push_debug(fmt, __VA_ARGS__)
 #define ASSERT_RETNULL(x)                                                                          \
   do {                                                                                             \
     if (!(x)) {                                                                                    \
-      PUSH_WARNING("%s : returning 0", #x);                                                             \
+      PUSH_WARNING("%s : returning 0", #x);                                                        \
       return 0;                                                                                    \
     }                                                                                              \
   } while (0)
