@@ -54,7 +54,7 @@ struct Oth_Camera {
   float2   world_to_screen(float2 p) {
     float  x0  = glm::dot(proj[0], (float4){p.x, p.y, 0.0f, 1.0f});
     float  x1  = glm::dot(proj[1], (float4){p.x, p.y, 0.0f, 1.0f});
-    float  x2  = glm::dot(proj[2], (float4){p.x, p.y, 0.0f, 1.0f});
+//    float  x2  = glm::dot(proj[2], (float4){p.x, p.y, 0.0f, 1.0f});
     float  x3  = glm::dot(proj[3], (float4){p.x, p.y, 0.0f, 1.0f});
     float2 pos = (float2){x0, x1} / x3;
     return pos;
@@ -174,4 +174,14 @@ struct Scene {
   static Scene *get_scene();
 };
 
+#define PUSH_WARNING(fmt, ...) Scene::get_scene()->push_warning(fmt, __VA_ARGS__)
+#define PUSH_ERROR(fmt, ...) Scene::get_scene()->push_warning(fmt, __VA_ARGS__)
+#define PUSH_DEBUG(fmt, ...) Scene::get_scene()->push_warning(fmt, __VA_ARGS__)
+#define ASSERT_RETNULL(x)                                                                          \
+  do {                                                                                             \
+    if (!(x)) {                                                                                    \
+      PUSH_WARNING("%s : returning 0", #x);                                                             \
+      return 0;                                                                                    \
+    }                                                                                              \
+  } while (0)
 #endif // NODE_EDITOR_H

@@ -13,6 +13,10 @@
 #ifndef __EMSCRIPTEN__
 void MessageCallback(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length,
                      const GLchar *message, const void *userParam) {
+  (void)source;
+  (void)id;
+  (void)userParam;
+  (void)length;
   fprintf(stderr, "GL CALLBACK: %s type = 0x%x, severity = 0x%x, message = %s\n",
           (type == GL_DEBUG_TYPE_ERROR ? "** GL ERROR **" : ""), type, severity, message);
 }
@@ -22,7 +26,6 @@ void dump_scene() {
   string_ref dump = Scene::get_scene()->get_save_script();
   dump_file("scene.lsp", dump.ptr, dump.len);
 }
-static int quit_loop = 0;
 
 SDL_Window *               window = NULL;
 SDL_GLContext              glc;
@@ -295,8 +298,6 @@ int main_tick() {
   ImGuiIO &io = ImGui::GetIO();
   (void)io;
   SDL_Event event;
-  i32       old_mp_x     = 0;
-  i32       old_mp_y     = 0;
   auto      handle_event = [&]() {
     ImGui_ImplSDL2_ProcessEvent(&event);
     Scene::get_scene()->consume_event(event);
@@ -513,6 +514,58 @@ void main_loop() {
   ImGui_ImplOpenGL3_Init(glsl_version);
 
 #if __EMSCRIPTEN__
+  char const *imgui_ini = R"(
+[Window][Dear ImGui Demo]
+Pos=0,19
+Size=384,1005
+Collapsed=0
+DockId=0x00000005,1
+
+[Window][DockSpace]
+Pos=0,0
+Size=1024,1024
+Collapsed=0
+
+[Window][Text Editor]
+Pos=0,19
+Size=384,1005
+Collapsed=0
+DockId=0x00000005,0
+
+[Window][Canvas]
+Pos=386,19
+Size=638,844
+Collapsed=0
+DockId=0x00000009,0
+
+[Window][Scene]
+Pos=0,19
+Size=384,1005
+Collapsed=0
+DockId=0x00000005,2
+
+[Window][Log]
+Pos=386,865
+Size=638,159
+Collapsed=0
+DockId=0x0000000A,0
+
+[Docking][Data]
+DockSpace         ID=0x09EF459F Window=0x9A404470 Pos=0,19 Size=1024,1005 Split=X
+  DockNode        ID=0x00000005 Parent=0x09EF459F SizeRef=384,493 Selected=0x426D426A
+  DockNode        ID=0x00000006 Parent=0x09EF459F SizeRef=638,493 Split=Y
+    DockNode      ID=0x00000001 Parent=0x00000006 SizeRef=1503,852 Split=Y Selected=0xA233692E
+      DockNode    ID=0x00000007 Parent=0x00000001 SizeRef=325,775 Split=Y Selected=0xA233692E
+        DockNode  ID=0x00000009 Parent=0x00000007 SizeRef=665,844 CentralNode=1 Selected=0xA233692E
+        DockNode  ID=0x0000000A Parent=0x00000007 SizeRef=665,159 Selected=0xB7722E25
+      DockNode    ID=0x00000008 Parent=0x00000001 SizeRef=325,238 Selected=0xBF126D42
+    DockNode      ID=0x00000002 Parent=0x00000006 SizeRef=1503,161 Selected=0x46B5E99C
+DockSpace         ID=0x3BC79352 Pos=710,330 Size=894,493 Split=X Selected=0xE927CF2F
+  DockNode        ID=0x00000003 Parent=0x3BC79352 SizeRef=447,493 CentralNode=1
+  DockNode        ID=0x00000004 Parent=0x3BC79352 SizeRef=445,493 Selected=0xCB707B69
+DockSpace         ID=0xA086D808 Pos=743,240 Size=591,840 CentralNode=1 Selected=0x8BB04FA5
+    )";
+  ImGui::LoadIniSettingsFromMemory(imgui_ini, 0);
   emscripten_set_main_loop(main_tick, 0, true);
 #else
   glEnable(GL_DEBUG_OUTPUT);
@@ -529,11 +582,82 @@ int main() {
 #if __EMSCRIPTEN__
   {
     char const *source = R"(
-    (main
-      (add_node "new node #" "Gfx/DrawCall" -6.409513 27.993538 1.000000 1.000000)
-      (add_node "new node 2" "Gfx/DrawCall" -12.458076 14.947708 1.000000 1.000000)
-      (move_camera -1.915402 9.350576 48.028961)
+(main
+  (let node_1 (add_node "new node 2" "Gfx/DrawCall"))
+  (set_node_position node_1 8.391430 17.581839)
+  (set_node_size node_1 1.000000 1.000000)
+  (let node_2 (add_node "new node #" "Gfx/DrawCall"))
+  (set_node_position node_2 17.449059 28.284681)
+  (set_node_size node_2 10.000000 1.000000)
+  (let node_4 (add_node "new node 1" "Gfx/DrawCall"))
+  (set_node_position node_4 27.550756 9.346700)
+  (set_node_size node_4 1.000000 1.000000)
+  (add_source
+"simple.vs.glsl"
+"""#version 300 es
+layout (location=0) in vec3 position;
+layout (location=1) in vec2 uv;
+layout (location=2) in vec3 normal;
+out vec2 f_uv;
+out vec3 f_normal;
+uniform int frame_id;
+
+void main() {
+    f_uv = uv;
+    float time = float(frame_id) * 0.1;
+    mat3 rot_init = mat3(
+        1.0, 0.0, 0.0,
+        0.0, 1.0, 0.0,
+        0.0, 0.0, 1.0
+        );
+    mat3 rot = mat3(
+        cos(time), 0.0, sin(time),
+        0.0, 1.0, 0.0,
+        -sin(time),0.0, cos(time)
+
+        );
+    mat3 scale = mat3(2.0e-1);
+    f_normal = rot_init * rot * normal;
+    gl_Position = vec4(rot_init * rot * scale * position, 1.0);
+
+}
+""")
+  (add_source
+"dump_nodes.lil"
+"""
+
+(main
+  (add_node "new node 1" "Gfx/DrawCall" -6.409513 27.993538 1.000000 1.000000)
+  (set_node_position 2 18.935884 31.176182)
+  (set_node_size 2 10.000000 1.000000)
+  (for i 0 100
+    (for j 0 100
+      (let node_id
+        (add_node
+          (format "auto_node_%i_%i" i j)
+          "Gfx/DrawCall"
+        )
+      )
+      (set_node_position node_id
+        (mul (itof j) 3.0)
+        (mul (itof i) 3.0)
+      )
     )
+  )
+  (for i 1 (add (get_num_nodes) 1)
+    (print
+      (format
+        "node: %i is_alive: %i"
+                i            (is_node_alive i)
+      )
+    )
+  )
+)
+
+""")
+  (move_camera 17.964195 19.441189 43.980461)
+)
+
     )";
     Scene::get_scene()->add_source("init", source);
     Scene::get_scene()->run_script("init");
@@ -548,26 +672,7 @@ int main() {
 #endif
   TextEditor::LanguageDefinition::CPlusPlus();
   editor.SetPalette(TextEditor::GetRetroBluePalette());
-  //  Scene::get_scene()->add_source("test",
-  //                                 R"(#version 300 es
-  //  precision highp float;
-  //  layout (location = 0) in vec2 vertex_position;
-  //  layout (location = 1) in vec4 instance_offset;
-  //  layout (location = 2) in vec3 instance_color;
-  //  layout (location = 3) in vec2 instance_size;
 
-  //  out vec3 color;
-  //  uniform mat4 projection;
-  //  void main() {
-  //      color = instance_color;
-  //      if (instance_offset.w > 0.0)
-  //        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy,
-  //        instance_offset.z, 1.0) * projection;
-  //      else
-  //        gl_Position =  vec4(vertex_position * instance_size + instance_offset.xy,
-  //        instance_offset.z, 1.0);
-  //  }
-  //  )");
   SDL_Init(SDL_INIT_VIDEO);
 
   window = SDL_CreateWindow("Gfx-Node", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 1024,

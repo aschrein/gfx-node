@@ -113,13 +113,13 @@ struct List {
     State state_table[0x100];
     memset(state_table, 0, sizeof(state_table));
     for (u8 j = 0x20; j <= 0x7f; j++) state_table[j] = State::SAW_PRINTABLE;
-    state_table['(']  = State::SAW_LPAREN;
-    state_table[')']  = State::SAW_RPAREN;
-    state_table['"']  = State::SAW_QUOTE;
-    state_table[' ']  = State::SAW_SEPARATOR;
-    state_table['\n'] = State::SAW_SEPARATOR;
-    state_table['\t'] = State::SAW_SEPARATOR;
-    state_table['\r'] = State::SAW_SEPARATOR;
+    state_table[(u32)'(']  = State::SAW_LPAREN;
+    state_table[(u32)')']  = State::SAW_RPAREN;
+    state_table[(u32)'"']  = State::SAW_QUOTE;
+    state_table[(u32)' ']  = State::SAW_SEPARATOR;
+    state_table[(u32)'\n'] = State::SAW_SEPARATOR;
+    state_table[(u32)'\t'] = State::SAW_SEPARATOR;
+    state_table[(u32)'\r'] = State::SAW_SEPARATOR;
 
     auto next_item = [&]() {
       List *next = allocator.alloc();
@@ -220,7 +220,7 @@ struct List {
   }
 };
 
-static bool parse_decimal_int(char const *str, size_t len, int32_t *result) {
+static inline bool parse_decimal_int(char const *str, size_t len, int32_t *result) {
   int32_t  final = 0;
   int32_t  pow   = 1;
   int32_t  sign  = 1;
@@ -261,7 +261,7 @@ static bool parse_decimal_int(char const *str, size_t len, int32_t *result) {
   return true;
 }
 
-static bool parse_float(char const *str, size_t len, float *result) {
+static inline bool parse_float(char const *str, size_t len, float *result) {
   float    final = 0.0f;
   uint32_t i     = 0;
   float    sign  = 1.0f;

@@ -119,45 +119,43 @@ template <typename F> __Defer__<F> defer_func(F f) { return __Defer__<F>(f); }
   } while (0)
 
 #if __linux__
-static size_t get_page_size() { return sysconf(_SC_PAGE_SIZE); }
+static inline size_t get_page_size() { return sysconf(_SC_PAGE_SIZE); }
 #else
-static size_t get_page_size() { return 1 << 12; }
+static inline size_t get_page_size() { return 1 << 12; }
 #endif
 
-static size_t page_align_up(size_t n) {
+static inline size_t page_align_up(size_t n) {
   return (n - get_page_size() - 1) & (~(get_page_size() - 1));
 }
 
-static size_t page_align_down(size_t n) { return (n) & (~(get_page_size() - 1)); }
+static inline size_t page_align_down(size_t n) { return (n) & (~(get_page_size() - 1)); }
 
-static size_t get_num_pages(size_t size) { return page_align_up(size) / get_page_size(); }
+static inline size_t get_num_pages(size_t size) { return page_align_up(size) / get_page_size(); }
 
 #if __linux__
-static void protect_pages(void *ptr, size_t num_pages) {
+static inline void protect_pages(void *ptr, size_t num_pages) {
   mprotect(ptr, num_pages * get_page_size(), PROT_NONE);
 }
-static void unprotect_pages(void *ptr, size_t num_pages, bool exec = false) {
+static inline void unprotect_pages(void *ptr, size_t num_pages, bool exec = false) {
   mprotect(ptr, num_pages * get_page_size(), PROT_WRITE | PROT_READ | (exec ? PROT_EXEC : 0));
 }
 
-static void unmap_pages(void *ptr, size_t num_pages) {
+static inline void unmap_pages(void *ptr, size_t num_pages) {
   int err = munmap(ptr, num_pages * get_page_size());
   ASSERT_ALWAYS(err == 0);
 }
 
-static void map_pages(void *ptr, size_t num_pages) {
+static inline void map_pages(void *ptr, size_t num_pages) {
   void *new_ptr =
       mmap(ptr, num_pages * get_page_size(), PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
   ASSERT_ALWAYS((size_t)new_ptr == (size_t)ptr);
 }
 #else
 // Noops
-static void protect_pages(void *ptr, size_t num_pages) {}
-static void unprotect_pages(void *ptr, size_t num_pages, bool exec = false) {}
-
-static void unmap_pages(void *ptr, size_t num_pages) {}
-
-static void map_pages(void *ptr, size_t num_pages) {}
+static inline void protect_pages(void *ptr, size_t num_pages) {}
+static inline void unprotect_pages(void *ptr, size_t num_pages, bool exec = false) {}
+static inline void unmap_pages(void *ptr, size_t num_pages) {}
+static inline void map_pages(void *ptr, size_t num_pages) {}
 #endif
 
 template <typename T = uint8_t> struct Pool {
@@ -295,12 +293,12 @@ struct string_ref {
 // for printf
 #define STRF(str) (i32) str.len, str.ptr
 
-static bool operator==(string_ref a, string_ref b) {
+static inline bool operator==(string_ref a, string_ref b) {
   if (a.ptr == NULL || b.ptr == NULL) return false;
   return a.len != b.len ? false : strncmp(a.ptr, b.ptr, a.len) == 0 ? true : false;
 }
 
-static uint64_t hash_of(uint64_t u) {
+static inline uint64_t hash_of(uint64_t u) {
   uint64_t v = u * 3935559000370003845 + 2691343689449507681;
   v ^= v >> 21;
   v ^= v << 37;
@@ -312,56 +310,21 @@ static uint64_t hash_of(uint64_t u) {
   return v;
 }
 
-template <typename T> static uint64_t hash_of(T *ptr) { return hash_of((u64)ptr); }
+template <typename T> static uint64_t hash_of(T *ptr) { return hash_of((size_t)ptr); }
 
-static uint64_t hash_of(string_ref a) {
-  uint64_t        len         = a.len;
-  uint64_t const *uint64_tptr = (uint64_t const *)a.ptr;
-  uint64_t        hash        = 0;
-  while (len >= 8) {
-    uint64_t a = *(uint64_t *)uint64_tptr;
-    hash       = hash ^ hash_of(a);
-    len -= 8;
-    ++uint64_tptr;
-  }
-  uint8_t const *u8ptr = (uint8_t *)uint64_tptr;
-  switch (len) {
-  case 7:
-    hash = hash ^ hash_of((uint64_t)*u8ptr);
-    ++u8ptr;
-    OK_FALLTHROUGH
-  case 6:
-    hash = hash ^ hash_of((uint64_t)*u8ptr);
-    ++u8ptr;
-    OK_FALLTHROUGH
-  case 5:
-    hash = hash ^ hash_of((uint64_t)*u8ptr);
-    ++u8ptr;
-    OK_FALLTHROUGH
-  case 4:
-    hash = hash ^ hash_of((uint64_t)*u8ptr);
-    ++u8ptr;
-    OK_FALLTHROUGH
-  case 3:
-    hash = hash ^ hash_of((uint64_t)*u8ptr);
-    ++u8ptr;
-    OK_FALLTHROUGH
-  case 2:
-    hash = hash ^ hash_of((uint64_t)*u8ptr);
-    ++u8ptr;
-    OK_FALLTHROUGH
-  case 1:
-    hash = hash ^ hash_of((uint64_t)*u8ptr);
-    ++u8ptr;
-    OK_FALLTHROUGH
-  default: break;
+static inline uint64_t hash_of(string_ref a) {
+  uint64_t hash = 5381;
+  for (size_t i = 0; i < a.len; i++) {
+    hash =
+        //(hash << 6) + (hash << 16) - hash + a.ptr[i];
+        ((hash << 5) + hash) + a.ptr[i];
   }
   return hash;
 }
 
 /** String view of a static string
  */
-static string_ref stref_s(char const *static_string) {
+static inline string_ref stref_s(char const *static_string) {
   if (static_string == NULL || static_string[0] == '\0') return string_ref{.ptr = NULL, .len = 0};
   ASSERT_DEBUG(static_string != NULL);
   string_ref out;
@@ -374,7 +337,7 @@ static string_ref stref_s(char const *static_string) {
 /** String view of a temporal string
   Uses thread local temporal storage
   */
-static string_ref stref_tmp_copy(string_ref a) {
+static inline string_ref stref_tmp_copy(string_ref a) {
   string_ref out;
   out.len = a.len;
   ASSERT_DEBUG(out.len != 0);
@@ -387,7 +350,7 @@ static string_ref stref_tmp_copy(string_ref a) {
 /** String view of a temporal string
   Uses thread local temporal storage
   */
-static string_ref stref_tmp(char const *tmp_string) {
+static inline string_ref stref_tmp(char const *tmp_string) {
   ASSERT_DEBUG(tmp_string != NULL);
   string_ref out;
   out.len = strlen(tmp_string);
@@ -399,7 +362,7 @@ static string_ref stref_tmp(char const *tmp_string) {
   return out;
 }
 
-static string_ref stref_concat(string_ref a, string_ref b) {
+static inline string_ref stref_concat(string_ref a, string_ref b) {
   string_ref out;
   out.len = a.len + b.len;
   ASSERT_DEBUG(out.len != 0);
@@ -410,7 +373,7 @@ static string_ref stref_concat(string_ref a, string_ref b) {
   return out;
 }
 
-static char const *stref_to_tmp_cstr(string_ref a) {
+static inline char const *stref_to_tmp_cstr(string_ref a) {
   ASSERT_DEBUG(a.ptr != NULL);
   char *ptr = (char *)tl_alloc_tmp(a.len + 1);
   memcpy(ptr, a.ptr, a.len);
@@ -418,7 +381,7 @@ static char const *stref_to_tmp_cstr(string_ref a) {
   return ptr;
 }
 
-static int32_t stref_find(string_ref a, string_ref b, size_t start = 0) {
+static inline int32_t stref_find(string_ref a, string_ref b, size_t start = 0) {
   size_t cursor = 0;
   for (size_t i = start; i < a.len; i++) {
     if (a.ptr[i] == b.ptr[cursor]) {
@@ -432,7 +395,7 @@ static int32_t stref_find(string_ref a, string_ref b, size_t start = 0) {
   return -1;
 }
 
-static int32_t stref_find_last(string_ref a, string_ref b, size_t start = 0) {
+static inline int32_t stref_find_last(string_ref a, string_ref b, size_t start = 0) {
   int32_t last_pos = -1;
   int32_t cursor   = stref_find(a, b, start);
   while (cursor >= 0) {
@@ -443,7 +406,7 @@ static int32_t stref_find_last(string_ref a, string_ref b, size_t start = 0) {
 }
 
 #if __linux__
-static void make_dir_recursive(string_ref path) {
+static inline void make_dir_recursive(string_ref path) {
   TMP_STORAGE_SCOPE;
   if (path.ptr[path.len - 1] == '/') path.len -= 1;
   int32_t sep = stref_find_last(path, stref_s("/"));
@@ -454,14 +417,14 @@ static void make_dir_recursive(string_ref path) {
 }
 #endif
 
-static void dump_file(char const *path, void const *data, size_t size) {
+static inline void dump_file(char const *path, void const *data, size_t size) {
   FILE *file = fopen(path, "wb");
   ASSERT_ALWAYS(file);
   fwrite(data, 1, size, file);
   fclose(file);
 }
 
-static char *read_file_tmp(char const *filename) {
+static inline char *read_file_tmp(char const *filename) {
   FILE *text_file = fopen(filename, "rb");
   ASSERT_ALWAYS(text_file);
   fseek(text_file, 0, SEEK_END);
@@ -475,7 +438,7 @@ static char *read_file_tmp(char const *filename) {
   return data;
 }
 
-static void ATTR_USED write_image_2d_i32_ppm(const char *file_name, void *data, uint32_t pitch,
+static inline void ATTR_USED write_image_2d_i32_ppm(const char *file_name, void *data, uint32_t pitch,
                                              uint32_t width, uint32_t height) {
   FILE *file = fopen(file_name, "wb");
   ASSERT_ALWAYS(file);
@@ -502,7 +465,7 @@ static void ATTR_USED write_image_2d_i32_ppm(const char *file_name, void *data, 
   fclose(file);
 }
 
-static void ATTR_USED write_image_2d_i24_ppm(const char *file_name, void *data, uint32_t pitch,
+static inline void ATTR_USED write_image_2d_i24_ppm(const char *file_name, void *data, uint32_t pitch,
                                              uint32_t width, uint32_t height) {
   FILE *file = fopen(file_name, "wb");
   ASSERT_ALWAYS(file);
@@ -522,7 +485,7 @@ static void ATTR_USED write_image_2d_i24_ppm(const char *file_name, void *data, 
   fclose(file);
 }
 
-static void ATTR_USED write_image_2d_i8_ppm(const char *file_name, void *data, uint32_t pitch,
+static inline void ATTR_USED write_image_2d_i8_ppm(const char *file_name, void *data, uint32_t pitch,
                                             uint32_t width, uint32_t height) {
   FILE *file = fopen(file_name, "wb");
   ASSERT_ALWAYS(file);
@@ -677,7 +640,7 @@ template <typename T, u32 N, typename Allcator_t = Default_Allocator> struct Sma
 };
 
 template <typename K, typename Allcator_t = Default_Allocator, size_t grow_k = 0x100,
-          size_t MAX_ATTEMPTS = 0x10>
+          size_t MAX_ATTEMPTS = 0x100>
 struct Hash_Set {
   struct Hash_Pair {
     K        key;
@@ -731,6 +694,8 @@ struct Hash_Set {
           arr.ptr[id] = pair;
           item_count += 1;
           return true;
+        } else { // collision
+          (void)0;
         }
       }
       hash = hash_of(hash);
@@ -788,12 +753,14 @@ struct Hash_Set {
     u32  iters = 0x10;
     bool suc   = false;
     while (!(suc = try_insert(key))) {
-      u32    resize_iters = 0x10;
+      u32    resize_iters = 6;
       size_t new_size     = arr.capacity + grow_k;
       bool   resize_suc   = false;
+      size_t grow_rate    = grow_k << 1;
       while (!(resize_suc = try_resize(new_size))) {
         if (resize_iters == 0) break;
-        new_size += grow_k;
+        new_size += grow_rate;
+        grow_rate = grow_rate << 1;
         resize_iters -= 1;
       }
       (void)resize_suc;
@@ -819,7 +786,7 @@ template <typename K, typename V> u64 hash_of(Map_Pair<K, V> const &item) {
 }
 
 template <typename K, typename V, typename Allcator_t = Default_Allocator, size_t grow_k = 0x100,
-          size_t MAX_ATTEMPTS = 0x10>
+          size_t MAX_ATTEMPTS = 0x20>
 struct Hash_Table {
   Hash_Set<Map_Pair<K, V>, Allcator_t, grow_k, MAX_ATTEMPTS> set;
   void                                                       release() { set.release(); }

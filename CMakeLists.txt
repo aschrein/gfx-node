@@ -21,5 +21,10 @@ target_include_directories(gfxnode
   ${CMAKE_SOURCE_DIR}
   ${CMAKE_BINARY_DIR}
 )
-set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g -DIMGUI_IMPL_OPENGL_LOADER_CUSTOM -march=skylake -Werror -ferror-limit=1 -fno-exceptions -fno-rtti -fvisibility=hidden")
+set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} \
+-g -DIMGUI_IMPL_OPENGL_LOADER_CUSTOM \
+-march=skylake \
+-pedantic-errors -Wall -Wextra -Werror -ferror-limit=1 \
+-Wno-c99-extensions -Wno-comment \
+-fno-exceptions -fno-rtti -fvisibility=hidden")
 target_link_libraries(gfxnode SDL2 OpenGL pthread)

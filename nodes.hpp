@@ -69,6 +69,9 @@ struct Node {
   }
   bool is_alive() { return id > 0; }
   u32  get_index() { return id - 1; }
+  void release() {
+    memset(this, 0, sizeof(Node));
+  }
 };
 
 struct Link {

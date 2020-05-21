@@ -3,9 +3,9 @@
 #include "script.hpp"
 #include "simplefont.h"
 
-static u16 f32_to_u16(f32 x) { return (u16)(clamp(x, 0.0f, 1.0f) * ((1 << 16) - 1)); }
+//static inline u16 f32_to_u16(f32 x) { return (u16)(clamp(x, 0.0f, 1.0f) * ((1 << 16) - 1)); }
 
-float3 parse_color_float3(char const *str) {
+static inline float3 parse_color_float3(char const *str) {
   ASSERT_ALWAYS(str[0] == '#');
   auto hex_to_decimal = [](char c) {
     if (c >= '0' && c <= '9') {
@@ -140,13 +140,32 @@ struct SourceDB {
 };
 
 struct NodeDB {
+  struct Node_Wrapper {
+    u32                node_id;
+    string_ref         node_name;
+    SmallArray<u32, 8> out_links;
+    SmallArray<u32, 8> in_links;
+    void               init() {
+      out_links.init();
+      in_links.init();
+    }
+    void release() {
+      out_links.release();
+      in_links.release();
+      memset(this, 0, sizeof(*this));
+    }
+  };
   Hash_Table<string_ref, u32> name2id;
-  Array<string_ref>           id2name;
 
-  Pool<char>  string_storage;
-  Array<Node> nodes;
+  Array<Node>         nodes;
+  Array<string_ref>   id2name;
+  Array<Node_Wrapper> wrappers;
+
   Array<Link> links;
-  void        init() {
+
+  Pool<char> string_storage;
+
+  void init() {
     name2id.init();
     id2name.init();
     nodes.init();
@@ -168,6 +187,7 @@ struct NodeDB {
     name2id.release();
     name2id.init();
     id2name.resize(nodes.size);
+    ASSERT_DEBUG(nodes.size == wrappers.size);
     ito(nodes.size) {
       Node &node = nodes[i];
       if (node.is_alive()) {
@@ -175,8 +195,10 @@ struct NodeDB {
         // zero terminated
         char *name_ptr = new_string_storage.alloc(tmp_name.len + 1);
         memcpy(name_ptr, tmp_name.ptr, tmp_name.len + 1);
-        name2id.insert(string_ref{.ptr = name_ptr, tmp_name.len}, node.get_index());
-        id2name[i] = string_ref{.ptr = name_ptr, tmp_name.len};
+        string_ref new_name_ref = string_ref{.ptr = name_ptr, tmp_name.len};
+        name2id.insert(new_name_ref, node.get_index());
+        id2name[i]            = new_name_ref;
+        wrappers[i].node_name = new_name_ref;
       }
     }
     string_storage.release();
@@ -190,37 +212,76 @@ struct NodeDB {
   void remove_node(string_ref name) {
     ASSERT_DEBUG(name2id.contains(name));
     u32 id = name2id.get(name);
-    memset(&nodes[id], 0, sizeof(Node));
+    wrappers[id].release();
+    nodes[id].release();
     name2id.remove(name);
   }
-  u32 add_node(string_ref name, string_ref type_name, float x, float y, float size_x,
-               float size_y) {
+  u32 get_id(string_ref name) {
+    if (name2id.contains(name)) {
+      return name2id.get(name);
+    }
+    return 0;
+  }
+  u32 add_node(string_ref name, string_ref type_name) {
     Node_t type = str_to_node_type(type_name);
     if (type == Node_t::UNKNOWN) return 0;
     if (name2id.contains(name)) {
+      PUSH_WARNING("Node name collision: %.*s", STRF(name));
       remove_node(name);
     }
     Node node;
     node.type   = type;
-    node.pos.x  = x;
-    node.pos.y  = y;
-    node.size.x = size_x;
-    node.size.y = size_y;
+    node.pos.x  = 0.0f;
+    node.pos.y  = 0.0f;
+    node.size.x = 1.0f;
+    node.size.y = 1.0f;
     node.id     = nodes.size + 1;
     nodes.push(node);
+    wrappers.push({});
     {
       char *name_ptr = string_storage.try_alloc(name.len + 1);
       if (name_ptr == NULL) {
         rebuild_index();
       } else {
         memcpy(name_ptr, name.ptr, name.len);
-        name_ptr[name.len] = '\0';
-        name2id.insert(string_ref{.ptr = name_ptr, name.len}, node.get_index());
-        id2name.push(string_ref{.ptr = name_ptr, name.len});
+        name_ptr[name.len]      = '\0';
+        string_ref new_name_ref = string_ref{.ptr = name_ptr, name.len};
+        name2id.insert(new_name_ref, node.get_index());
+        id2name.push(new_name_ref);
+        Node_Wrapper wrapper;
+        wrapper.init();
+        wrapper.node_id       = node.id;
+        wrapper.node_name     = new_name_ref;
+        wrappers[node.id - 1] = wrapper;
       }
     }
 
     return node.id;
+  }
+  void set_node_position(string_ref name, float x, float y) {
+    if (name2id.contains(name)) {
+      u32 id = name2id.get(name);
+      set_node_position(id, x, y);
+    }
+  }
+  void set_node_position(u32 id, float x, float y) {
+    nodes[id - 1].pos.x = x;
+    nodes[id - 1].pos.y = y;
+  }
+  void set_node_size(u32 id, float size_x, float size_y) {
+    nodes[id - 1].size.x = size_x;
+    nodes[id - 1].size.y = size_y;
+  }
+  u32 add_link(u32 src_node_id, u32 src_slot_id, u32 dst_node_id, u32 dst_slot_id) {
+    ASSERT_RETNULL(src_node_id > 0 && src_node_id <= nodes.size);
+    ASSERT_RETNULL(dst_node_id > 0 && dst_node_id <= nodes.size);
+    Node &        src  = nodes[src_node_id];
+//    Node_Wrapper &wsrc = wrappers[src_node_id];
+    Node &        dst  = nodes[dst_node_id];
+//    Node_Wrapper &wdst = wrappers[dst_node_id];
+    ASSERT_RETNULL(src_slot_id > 0 && src_slot_id <= src.num_out_slots);
+    ASSERT_RETNULL(dst_slot_id > 0 && dst_slot_id <= dst.num_in_slots);
+    return 0;
   }
 };
 
@@ -271,7 +332,11 @@ struct _Scene : public Scene {
       push_warning("Node's name is invalid");
       return 0;
     }
-    return nodedb.add_node(stref_s(name), stref_s(type_name), x, y, size_x, size_y);
+    u32 id = nodedb.add_node(stref_s(name), stref_s(type_name));
+    ASSERT_RETNULL(id > 0);
+    nodedb.set_node_position(id, x, y);
+    nodedb.set_node_size(id, size_x, size_y);
+    return id;
   }
   void run_script(char const *src_name) {
     string_ref source = sourcedb.get_text(stref_s(src_name));
@@ -316,11 +381,20 @@ struct _Scene : public Scene {
     ito(nodedb.nodes.size) {
       Node &node = nodedb.nodes[i];
       if (node.is_alive()) {
-        builder.push_fmt(                                 //
-            "  (add_node \"%.*s\" \"%s\" %f %f %f %f)\n", //
-            STRF(nodedb.get_name(node.id)),               //
-            node_type_to_str(node.type),                  //
-            node.pos.x, node.pos.y,                       //
+        builder.push_fmt(                                   //
+            "  (let node_%i (add_node \"%.*s\" \"%s\"))\n", //
+            node.id,
+            STRF(nodedb.get_name(node.id)), //
+            node_type_to_str(node.type),    //
+            0.0f, 0.0f,                     //
+            1.0f, 1.0f);
+        builder.push_fmt(                            //
+            "  (set_node_position node_%i %f %f)\n", //
+            node.id,                                 //
+            node.pos.x, node.pos.y);
+        builder.push_fmt(                        //
+            "  (set_node_size node_%i %f %f)\n", //
+            node.id,                             //
             node.size.x, node.size.y);
       }
     }
@@ -421,6 +495,18 @@ struct _Scene : public Scene {
 #define CALL_EVAL(x)                                                                               \
   eval(x);                                                                                         \
   CHECK_ERROR
+#define ASSERT_SMB(x) EVAL_ASSERT(x != NULL && x->type == Value::Value_t::SYMBOL);
+#define ASSERT_I32(x) EVAL_ASSERT(x != NULL && x->type == Value::Value_t::I32);
+#define ASSERT_F32(x) EVAL_ASSERT(x != NULL && x->type == Value::Value_t::F32);
+#define EVAL_SMB(res, id)                                                                          \
+  Value *res = CALL_EVAL(l->get(id));                                                              \
+  ASSERT_SMB(res)
+#define EVAL_I32(res, id)                                                                          \
+  Value *res = CALL_EVAL(l->get(id));                                                              \
+  ASSERT_I32(res)
+#define EVAL_F32(res, id)                                                                          \
+  Value *res = CALL_EVAL(l->get(id));                                                              \
+  ASSERT_F32(res)
       ///////////////////
       if (l->nonempty()) {
         i32  imm32;
@@ -447,23 +533,30 @@ struct _Scene : public Scene {
           }
           return NULL;
         } else if (l->cmp_symbol("add_node")) {
-          Value *name = CALL_EVAL(l->get(1));
-          EVAL_ASSERT(name != NULL && name->type == Value::Value_t::SYMBOL);
-          Value *type = CALL_EVAL(l->get(2));
-          EVAL_ASSERT(type != NULL && type->type == Value::Value_t::SYMBOL);
-          Value *x = CALL_EVAL(l->get(3));
-          EVAL_ASSERT(x != NULL && x->type == Value::Value_t::F32);
-          Value *y = CALL_EVAL(l->get(4));
-          EVAL_ASSERT(y != NULL && y->type == Value::Value_t::F32);
-          Value *size_x = CALL_EVAL(l->get(5));
-          EVAL_ASSERT(size_x != NULL && size_x->type == Value::Value_t::F32);
-          Value *size_y = CALL_EVAL(l->get(6));
-          EVAL_ASSERT(size_y != NULL && size_y->type == Value::Value_t::F32);
-          u32 id = scene->add_node(stref_to_tmp_cstr(name->str), stref_to_tmp_cstr(type->str), x->f,
-                                   y->f, size_x->f, size_y->f);
+          EVAL_SMB(name, 1);
+          EVAL_SMB(type, 2);
+          u32    id      = scene->nodedb.add_node(name->str, type->str);
           Value *new_val = ALLOC_VAL();
           new_val->i     = id;
           new_val->type  = Value::Value_t::I32;
+          return new_val;
+        } else if (l->cmp_symbol("set_node_position")) {
+          EVAL_I32(id, 1);
+          EVAL_F32(x, 2);
+          EVAL_F32(y, 3);
+          scene->nodedb.set_node_position(id->i, x->f, y->f);
+          return NULL;
+        } else if (l->cmp_symbol("set_node_size")) {
+          EVAL_I32(id, 1);
+          EVAL_F32(x, 2);
+          EVAL_F32(y, 3);
+          scene->nodedb.set_node_size(id->i, x->f, y->f);
+          return NULL;
+        } else if (l->cmp_symbol("itof")) {
+          EVAL_I32(a, 1);
+          Value *new_val = ALLOC_VAL();
+          new_val->f     = (float)a->i;
+          new_val->type  = Value::Value_t::F32;
           return new_val;
         } else if (l->cmp_symbol("add")) {
           Value *op1 = CALL_EVAL(l->get(1));
@@ -476,8 +569,34 @@ struct _Scene : public Scene {
             new_val->i     = op1->i + op2->i;
             new_val->type  = Value::Value_t::I32;
             return new_val;
+          } else if (op1->type == Value::Value_t::F32) {
+            Value *new_val = ALLOC_VAL();
+            new_val->f     = op1->f + op2->f;
+            new_val->type  = Value::Value_t::F32;
+            return new_val;
           } else {
             scene->push_warning("add: unsopported operand types");
+            eval_error = true;
+          }
+          return NULL;
+        }  else if (l->cmp_symbol("mul")) {
+          Value *op1 = CALL_EVAL(l->get(1));
+          EVAL_ASSERT(op1 != NULL);
+          Value *op2 = CALL_EVAL(l->get(2));
+          EVAL_ASSERT(op2 != NULL);
+          EVAL_ASSERT(op1->type == op2->type);
+          if (op1->type == Value::Value_t::I32) {
+            Value *new_val = ALLOC_VAL();
+            new_val->i     = op1->i * op2->i;
+            new_val->type  = Value::Value_t::I32;
+            return new_val;
+          } else if (op1->type == Value::Value_t::F32) {
+            Value *new_val = ALLOC_VAL();
+            new_val->f     = op1->f * op2->f;
+            new_val->type  = Value::Value_t::F32;
+            return new_val;
+          } else {
+            scene->push_warning("mul: unsopported operand types");
             eval_error = true;
           }
           return NULL;
@@ -502,8 +621,12 @@ struct _Scene : public Scene {
             enter_scope();
             new_val->i = i;
             add_symbol(name->str, new_val);
-            CALL_EVAL(l->get(4));
-            exit_scope();
+            defer(exit_scope());
+            List *cur = l->get(4);
+            while (cur != NULL) {
+              CALL_EVAL(cur);
+              cur = cur->next;
+            }
           }
           return NULL;
         } else if (l->cmp_symbol("get_num_nodes")) {
@@ -584,7 +707,7 @@ struct _Scene : public Scene {
                     scene->push_error("[format] Blimey!");
                     return NULL;
                   }
-                  if (num_chars > sizeof(0x100)) {
+                  if (num_chars > 0x100) {
                     eval_error = true;
                     scene->push_error("[format] Format buffer overflow!");
                     return NULL;
@@ -626,7 +749,6 @@ struct _Scene : public Scene {
   };
 
   void consume_event(SDL_Event event) {
-    float        camera_speed      = 1.0f;
     static bool  ldown             = false;
     static int   old_mp_x          = 0;
     static int   old_mp_y          = 0;
@@ -650,6 +772,7 @@ struct _Scene : public Scene {
     } break;
     case SDL_KEYDOWN: {
       uint32_t c = event.key.keysym.sym;
+      (void)c;
       switch (event.key.keysym.sym) {
 
       case SDLK_ESCAPE: {
@@ -694,10 +817,10 @@ struct _Scene : public Scene {
     case SDL_MOUSEMOTION: {
       SDL_MouseMotionEvent *m = (SDL_MouseMotionEvent *)&event;
       if (c2d.hovered) c2d.consume_event(event);
-      int    dx = m->x - old_mp_x;
-      int    dy = m->y - old_mp_y;
-      float2 wd = c2d.camera.window_to_world({m->x, m->y}) -
-                  c2d.camera.window_to_world({old_mp_x, old_mp_y});
+//      int    dx = m->x - old_mp_x;
+//      int    dy = m->y - old_mp_y;
+//      float2 wd = c2d.camera.window_to_world({m->x, m->y}) -
+//                  c2d.camera.window_to_world({old_mp_x, old_mp_y});
       old_mp_x          = m->x;
       old_mp_y          = m->y;
       float wmdx        = c2d.camera.mouse_world_x - old_mouse_world_x;
@@ -735,11 +858,9 @@ void Scene::draw() {
   float  dy              = 1.0f;
   float  size_x          = 256.0f;
   float  size_y          = 256.0f;
-  float  QUAD_LAYER      = 1.0f / 256.0f;
   float  GRID_LAYER      = 2.0f / 256.0f;
   float  NODE_BG_LAYER   = 10.0f / 256.0f;
   float  NODE_NAME_LAYER = 11.0f / 256.0f;
-  float  TEXT_LAYER      = 30.0f / 256.0f;
   float3 grid_color      = parse_color_float3(dark_mode::g_grid_color);
   //  c2d.draw_string({//
   //                   .c_str = "hello world!",
@@ -880,6 +1001,7 @@ void Oth_Camera::update(u32 viewport_x, u32 viewport_y, u32 viewport_width, u32 
   float e               = (float)2.4e-7f;
   fovy                  = 2.0f;
   fovx                  = 2.0f * height_over_width;
+  (void)e;
   // clang-format off
       float4 proj[4] = {
         {fovx/pos.z,   0.0f,          0.0f,      -fovx * pos.x/pos.z},
@@ -959,7 +1081,6 @@ GLuint create_program(GLchar const *vsrc, GLchar const *fsrc) {
 }
 
 void Oth_Camera::consume_event(SDL_Event event) {
-  float       camera_speed  = 1.0f;
   static bool ldown         = false;
   static int  old_mp_x      = 0;
   static int  old_mp_y      = 0;
@@ -980,6 +1101,7 @@ void Oth_Camera::consume_event(SDL_Event event) {
   } break;
   case SDL_KEYDOWN: {
     uint32_t c = event.key.keysym.sym;
+    (void)c;
     switch (event.key.keysym.sym) {
 
     case SDLK_ESCAPE: {
@@ -1145,6 +1267,7 @@ void Context2D::render_stuff() {
 
       return 0;
     }();
+    (void)init_va0;
     // Draw quads
     if (quad_storage.cursor != 0) {
       glUseProgram(quad_program);
@@ -1377,13 +1500,13 @@ void Context2D::render_stuff() {
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         return 0;
       }();
+      (void)glyph_vao;
       struct Glyph_Instance_GL {
         float x, y, z;
         float u, v;
         float r, g, b;
       };
       static_assert(sizeof(Glyph_Instance_GL) == 32, "");
-      uint32_t glyph_scale     = 2;
       float    glyph_uv_width  = (float)simplefont_bitmap_glyphs_width / simplefont_bitmap_width;
       float    glyph_uv_height = (float)simplefont_bitmap_glyphs_height / simplefont_bitmap_height;
 

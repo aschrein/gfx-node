@@ -129,7 +129,22 @@ int main() {
     ASSERT_ALWAYS(Test_Allocator::total_alloced == 0);
   }
   {
-    char const *      source         = R"(
+    tl_alloc_tmp_enter();
+    Hash_Set<string_ref, Test_Allocator, 0x10000> set;
+    set.init();
+    ito(1000) {
+      jto(1000) {
+        snprintf(buf, sizeof(buf), "key_%i_%i", i, j);
+        string_ref key = stref_tmp(buf);
+        set.insert(key);
+      }
+    }
+    set.release();
+    tl_alloc_tmp_exit();
+    ASSERT_ALWAYS(Test_Allocator::total_alloced == 0);
+  }
+  {
+    char const *      source       = R"(
     (main
       (add_node
         (format "my_node %i" 666)
