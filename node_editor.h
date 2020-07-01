@@ -9,7 +9,7 @@
 #include <emscripten/emscripten.h>
 #include <emscripten/html5.h>
 #else
-#include <GLES3/gl32.h>
+#include <GL/gl3w.h>
 #include <SDL2/SDL.h>
 #endif
 
@@ -52,29 +52,29 @@ struct Oth_Camera {
   uint32_t glyph_scale = 1;
   void     update(u32 viewport_x, u32 viewport_y, u32 viewport_width, u32 viewport_height);
   float2   world_to_screen(float2 p) {
-    float x0 = glm::dot(proj[0], (float4){p.x, p.y, 0.0f, 1.0f});
-    float x1 = glm::dot(proj[1], (float4){p.x, p.y, 0.0f, 1.0f});
-    //    float  x2  = glm::dot(proj[2], (float4){p.x, p.y, 0.0f, 1.0f});
-    float  x3  = glm::dot(proj[3], (float4){p.x, p.y, 0.0f, 1.0f});
-    float2 pos = (float2){x0, x1} / x3;
+    float x0 = glm::dot(proj[0], float4{p.x, p.y, 0.0f, 1.0f});
+    float x1 = glm::dot(proj[1], float4{p.x, p.y, 0.0f, 1.0f});
+    //    float  x2  = glm::dot(proj[2], float4{p.x, p.y, 0.0f, 1.0f});
+    float  x3  = glm::dot(proj[3], float4{p.x, p.y, 0.0f, 1.0f});
+    float2 pos = float2{x0, x1} / x3;
     return pos;
   }
   float2 screen_to_world(float2 p) {
-    return (float2){
+    return float2{
         //
         p.x * pos.z / fovx + pos.x,
         p.y * pos.z / fovy + pos.y,
     };
   }
   float2 window_to_world(int2 p) {
-    return screen_to_world((float2){
+    return screen_to_world(float2{
         //
         2.0f * ((float)(p.x - viewport_x) + 0.5f) / viewport_width - 1.0f,
         -2.0f * ((float)(p.y - viewport_y) - 0.5f) / viewport_height + 1.0f,
     });
   }
   float2 window_to_screen(int2 p) {
-    return (float2){
+    return float2{
         //
         width_over_heigth * 2.0f * ((float)(p.x - viewport_x) / viewport_width - 0.5f),
         2.0f * (-(float)(p.y - viewport_y) / viewport_height + 0.5f),
@@ -82,14 +82,14 @@ struct Oth_Camera {
   }
   float window_width_to_world(uint32_t size) {
     float screen_size = 2.0f * (float)size / viewport_width;
-    return screen_to_world((float2){//
+    return screen_to_world(float2{//
                                     screen_size, 0.0f})
                .x -
            pos.x;
   }
   float window_height_to_world(uint32_t size) {
     float screen_size = 2.0f * (float)size / viewport_height;
-    return screen_to_world((float2){//
+    return screen_to_world(float2{//
                                     0.0f, screen_size})
                .y -
            pos.y;

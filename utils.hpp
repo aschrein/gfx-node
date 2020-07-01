@@ -1,6 +1,8 @@
 #ifndef UTILS_H
 #define UTILS_H
 
+#include <cstdlib>
+#include <malloc.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -11,11 +13,16 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#define DLL_EXPORT __attribute__((visibility("default")))
+#define ATTR_USED __attribute__((used))
+#elif WIN32
+#include <Windows.h>
+#define DLL_EXPORT __declspec(dllexport)
+#define ATTR_USED
+#else
+#define DLL_EXPORT
+#define ATTR_USED
 #endif
-
-extern "C" void  abort();
-extern "C" void *malloc(size_t);
-extern "C" void  free(void *);
 
 #define ASSERT_ALWAYS(x)                                                                           \
   do {                                                                                             \
@@ -27,14 +34,14 @@ extern "C" void  free(void *);
 #define ASSERT_DEBUG(x) ASSERT_ALWAYS(x)
 #define NOTNULL(x) ASSERT_ALWAYS((x) != NULL)
 #define ARRAY_SIZE(_ARR) ((int)(sizeof(_ARR) / sizeof(*_ARR)))
-#define DLL_EXPORT __attribute__((visibility("default")))
-#define ATTR_USED __attribute__((used))
 
 #undef MIN
 #undef MAX
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
-#define OFFSETOF(class, field) ((size_t)&(((class*)0)->field))
+#define CLAMP(x, a, b) ((x) < (a) ? (a) : ((x) > (b) ? (b) : (x)))
+#define OFFSETOF(class, field) ((size_t) & (((class *)0)->field))
+#define MEMZERO(x) memset(&x, 0, sizeof(x))
 
 using u64 = uint64_t;
 using u32 = uint32_t;
@@ -82,7 +89,11 @@ template <typename T, typename F> bool any(T set, F f) {
     abort();                                                                                       \
   } while (0)
 #define UNIMPLEMENTED UNIMPLEMENTED_("")
-#define TRAP UNIMPLEMENTED_("")
+#define TRAP                                                                                       \
+  do {                                                                                             \
+    fprintf(stderr, "%s:%i TRAP\n", __FILE__, __LINE__);                                           \
+    abort();                                                                                       \
+  } while (0)
 #define NOCOMMIT (void)0
 
 template <typename F> struct __Defer__ {
@@ -124,12 +135,18 @@ template <typename F> __Defer__<F> defer_func(F f) { return __Defer__<F>(f); }
 
 #if __linux__
 static inline size_t get_page_size() { return sysconf(_SC_PAGE_SIZE); }
+#elif WIN32
+static inline size_t get_page_size() {
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  return si.dwPageSize;
+}
 #else
 static inline size_t get_page_size() { return 1 << 12; }
 #endif
 
 static inline size_t page_align_up(size_t n) {
-  return (n - get_page_size() - 1) & (~(get_page_size() - 1));
+  return (n + get_page_size() - 1) & (~(get_page_size() - 1));
 }
 
 static inline size_t page_align_down(size_t n) { return (n) & (~(get_page_size() - 1)); }
@@ -154,6 +171,12 @@ static inline void map_pages(void *ptr, size_t num_pages) {
       mmap(ptr, num_pages * get_page_size(), PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0);
   ASSERT_ALWAYS((size_t)new_ptr == (size_t)ptr);
 }
+#elif WIN32
+// TODO
+static inline void protect_pages(void *ptr, size_t num_pages) {}
+static inline void unprotect_pages(void *ptr, size_t num_pages, bool exec = false) {}
+static inline void unmap_pages(void *ptr, size_t num_pages) {}
+static inline void map_pages(void *ptr, size_t num_pages) {}
 #else
 // Noops
 static inline void protect_pages(void *ptr, size_t num_pages) {}
@@ -161,6 +184,13 @@ static inline void unprotect_pages(void *ptr, size_t num_pages, bool exec = fals
 static inline void unmap_pages(void *ptr, size_t num_pages) {}
 static inline void map_pages(void *ptr, size_t num_pages) {}
 #endif
+
+template <typename T, typename V> struct Pair {
+  T first;
+  V second;
+};
+
+template <typename T, typename V> Pair<T, V> make_pair(T t, V v) { return {t, v}; }
 
 template <typename T = uint8_t> struct Pool {
   uint8_t *ptr;
@@ -173,19 +203,28 @@ template <typename T = uint8_t> struct Pool {
   static Pool create(size_t capacity) {
     ASSERT_DEBUG(capacity > 0);
     Pool   out;
-    size_t STACK_CAPACITY = 0x100 * sizeof(size_t);
+    size_t STACK_CAPACITY = 0x20 * sizeof(size_t);
     out.mem_length        = get_num_pages(STACK_CAPACITY + capacity * sizeof(T)) * get_page_size();
 #if __linux__
     out.ptr = (uint8_t *)mmap(NULL, out.mem_length, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE,
                               -1, 0);
+    ASSERT_ALWAYS(out.ptr != MAP_FAILED);
 #else
     out.ptr = (uint8_t *)malloc(out.mem_length);
+    NOTNULL(out.ptr);
 #endif
     out.capacity       = capacity;
     out.cursor         = 0;
     out.stack_capacity = STACK_CAPACITY;
     out.stack_cursor   = 0;
     return out;
+  }
+
+  T *back() { return (T *)(this->ptr + this->stack_capacity + this->cursor * sizeof(T)); }
+
+  void advance(size_t size) {
+    this->cursor += size;
+    ASSERT_DEBUG(this->cursor < this->capacity);
   }
 
   void release() {
@@ -273,10 +312,11 @@ template <typename T = uint8_t> struct Pool {
     memcpy(new_ptr, old_ptr, count * sizeof(T));
     return new_ptr;
   }
-
-  bool has_space(size_t size) {
-    return cursor + size <= capacity;
+  void pop() {
+    ASSERT_DEBUG(cursor > 0);
+    cursor -= 1;
   }
+  bool has_space(size_t size) { return cursor + size <= capacity; }
 };
 
 template <typename T = u8> using Temporary_Storage = Pool<T>;
@@ -303,6 +343,30 @@ struct string_ref {
   size_t      len;
   string_ref  substr(size_t offset, size_t new_len) { return string_ref{ptr + offset, new_len}; }
 };
+
+static inline i32 str_match(char const *cur, char const *patt) {
+  i32 i = 0;
+  while (true) {
+    if (cur[i] == '\0' || patt[i] == '\0') return i;
+    if (cur[i] == patt[i]) {
+      i++;
+    } else {
+      return -1;
+    }
+  }
+}
+
+static inline i32 str_find(char const *cur, size_t maxlen, char c) {
+  size_t i = 0;
+  while (true) {
+    if (i == maxlen) return -1;
+    if (cur[i] == '\0') return -1;
+    if (cur[i] == c) {
+      return (i32)i;
+    }
+    i++;
+  }
+}
 
 // for printf
 #define STRF(str) (i32) str.len, str.ptr
@@ -339,7 +403,7 @@ static inline uint64_t hash_of(string_ref a) {
 /** String view of a static string
  */
 static inline string_ref stref_s(char const *static_string) {
-  if (static_string == NULL || static_string[0] == '\0') return string_ref{.ptr = NULL, .len = 0};
+  if (static_string == NULL || static_string[0] == '\0') return string_ref{NULL, 0};
   ASSERT_DEBUG(static_string != NULL);
   string_ref out;
   out.ptr = static_string;
@@ -440,7 +504,8 @@ static inline void dump_file(char const *path, void const *data, size_t size) {
 
 static inline char *read_file_tmp(char const *filename) {
   FILE *text_file = fopen(filename, "rb");
-  ASSERT_ALWAYS(text_file);
+  if (text_file == NULL)
+    return NULL;
   fseek(text_file, 0, SEEK_END);
   long fsize = ftell(text_file);
   fseek(text_file, 0, SEEK_SET);
@@ -545,7 +610,8 @@ struct Default_Allocator {
   static void free(void *ptr) { tl_free(ptr); }
 };
 
-template <typename T, size_t grow_k = 0x100, typename Allcator_t = Default_Allocator> struct Array {
+template <typename T, size_t grow_k = 0x100, typename Allcator_t = Default_Allocator> //
+struct Array {
   T *    ptr;
   size_t size;
   size_t capacity;
@@ -574,22 +640,12 @@ template <typename T, size_t grow_k = 0x100, typename Allcator_t = Default_Alloc
     ASSERT_DEBUG(ptr != NULL);
     size = new_size;
   }
+  void reset() { size = 0; }
   void memzero() {
     if (capacity > 0) {
       memset(ptr, 0, sizeof(T) * capacity);
     }
   }
-  //  Array copy() {
-  //    Array out;
-  //    out.ptr      = NULL;
-  //    out.size     = size;
-  //    out.capacity = capacity;
-  //    if (size > 0) {
-  //      out.resize(&out, capacity);
-  //      memcpy(out.ptr, ptr, capacity * sizeof(T));
-  //    }
-  //    return out;
-  //  }
   void push(T elem) {
     if (size + 1 > capacity) {
       uint64_t new_capacity = capacity + grow_k;
@@ -600,6 +656,11 @@ template <typename T, size_t grow_k = 0x100, typename Allcator_t = Default_Alloc
     ASSERT_DEBUG(ptr != NULL);
     memcpy(ptr + size, &elem, sizeof(T));
     size += 1;
+  }
+
+  T &back() {
+    ASSERT_DEBUG(size != 0);
+    return ptr[size - 1];
   }
 
   T pop() {
@@ -627,7 +688,8 @@ template <typename T, size_t grow_k = 0x100, typename Allcator_t = Default_Alloc
   }
 };
 
-template <typename T, u32 N, typename Allcator_t = Default_Allocator> struct SmallArray {
+template <typename T, u32 N, typename Allcator_t = Default_Allocator> //
+struct SmallArray {
   T                           local[N];
   size_t                      size;
   Array<T, N * 3, Allcator_t> array;
@@ -653,6 +715,12 @@ template <typename T, u32 N, typename Allcator_t = Default_Allocator> struct Sma
       size++;
     }
   }
+  bool has(T elem) {
+    ito(size) {
+      if ((*this)[i] == elem) return true;
+    }
+    return false;
+  }
 };
 
 template <typename K, typename Allcator_t = Default_Allocator, size_t grow_k = 0x100,
@@ -673,16 +741,21 @@ struct Hash_Set {
     arr.init();
     item_count = 0;
   }
-
+  void reset() {
+    arr.memzero();
+    item_count = 0;
+  }
   i32 find(K key) {
-    uint64_t hash = hash_of(key);
+    if (item_count == 0) return -1;
+    uint64_t key_hash = hash_of(key);
+    uint64_t hash = key_hash;
     uint64_t size = arr.capacity;
     if (size == 0) return -1;
     uint32_t attempt_id = 0;
     for (; attempt_id < MAX_ATTEMPTS; ++attempt_id) {
       uint64_t id = hash % size;
       if (hash != 0) {
-        if (arr.ptr[id].key == key) {
+        if (arr.ptr[id].hash == key_hash && arr.ptr[id].key == key) {
           return (i32)id;
         }
       }
@@ -692,7 +765,8 @@ struct Hash_Set {
   }
 
   bool try_insert(K key) {
-    uint64_t hash = hash_of(key);
+    uint64_t key_hash = hash_of(key);
+    uint64_t hash = key_hash;
     uint64_t size = arr.capacity;
     if (size == 0) {
       arr.resize(grow_k);
@@ -701,14 +775,16 @@ struct Hash_Set {
     }
     Hash_Pair pair;
     pair.key  = key;
-    pair.hash = hash;
+    pair.hash = key_hash;
     for (uint32_t attempt_id = 0; attempt_id < MAX_ATTEMPTS; ++attempt_id) {
       uint64_t id = hash % size;
       if (hash != 0) {
-        pair.hash = hash;
-        if (arr.ptr[id].hash == 0) {
+        if (arr.ptr[id].hash == 0) { // Empty slot
           arr.ptr[id] = pair;
           item_count += 1;
+          return true;
+        } else if (arr.ptr[id].hash == key_hash && arr.ptr[id].key == key) { // Override
+          arr.ptr[id] = pair;
           return true;
         } else { // collision
           (void)0;
@@ -749,20 +825,24 @@ struct Hash_Set {
     return true;
   }
 
-  bool remove(K key) {
-    i32 id = find(key);
-    if (id > -1) {
-      ASSERT_DEBUG(item_count > 0);
-      arr.ptr[id].hash = 0u;
-      item_count -= 1;
-      if (item_count == 0) {
-        arr.release();
-      } else if (arr.size + grow_k < arr.capacity) {
-        try_resize(arr.capacity - grow_k);
+  void remove(K key) {
+    if (item_count == 0) return;
+    while (true) {
+      i32 id = find(key);
+      if (id > -1) {
+        ASSERT_DEBUG(item_count > 0);
+        arr.ptr[id].hash = 0u;
+        item_count -= 1;
+        if (item_count == 0) {
+          arr.release();
+        } else if (arr.size + grow_k < arr.capacity) {
+          try_resize(arr.capacity - grow_k);
+        }
+
+      } else {
+        break;
       }
-      return true;
     }
-    return false;
   }
 
   bool insert(K key) {
@@ -804,23 +884,48 @@ template <typename K, typename V> u64 hash_of(Map_Pair<K, V> const &item) {
 template <typename K, typename V, typename Allcator_t = Default_Allocator, size_t grow_k = 0x100,
           size_t MAX_ATTEMPTS = 0x20>
 struct Hash_Table {
+  using Pair_t = Map_Pair<K, V>;
   Hash_Set<Map_Pair<K, V>, Allcator_t, grow_k, MAX_ATTEMPTS> set;
   void                                                       release() { set.release(); }
   void                                                       init() { set.init(); }
 
-  i32 find(K key) { return set.find(Map_Pair<K, V>{.key = key, .value = {}}); }
+  i32 find(K key) { return set.find(Map_Pair<K, V>{ key,  {}}); }
 
   V get(K key) {
-    i32 id = set.find(Map_Pair<K, V>{.key = key, .value = {}});
+    i32 id = set.find(Map_Pair<K, V>{ key,  {}});
     ASSERT_DEBUG(id >= 0);
     return set.arr[id].key.value;
   }
 
-  bool remove(K key) { return set.remove(Map_Pair<K, V>{.key = key, .value = {}}); }
+  V *get_or_null(K key) {
+    if (set.item_count == 0) return 0;
+    i32 id = set.find(Map_Pair<K, V>{ key,  {}});
+    if (id < 0) return 0;
+    return &set.arr[id].key.value;
+  }
 
-  bool insert(K key, V value) { return set.insert(Map_Pair<K, V>{.key = key, .value = value}); }
+  void remove(K key) { return set.remove(Map_Pair<K, V>{ key,  {}}); }
 
-  bool contains(K key) { return set.contains(Map_Pair<K, V>{.key = key, .value = {}}); }
+  bool insert(K key, V value) { return set.insert(Map_Pair<K, V>{ key,  value}); }
+
+  bool contains(K key) { return set.contains(Map_Pair<K, V>{ key,  {}}); }
+
+  template <typename F> void iter(F f) {
+    ito(set.arr.size) {
+      auto &item = set.arr[i];
+      if (item.hash != 0) {
+        f(item.key);
+      }
+    }
+  }
+  template <typename F> void iter_values(F f) {
+    ito(set.arr.size) {
+      auto &item = set.arr[i];
+      if (item.hash != 0) {
+        f(item.key.value);
+      }
+    }
+  }
 };
 
 #endif

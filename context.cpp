@@ -20,7 +20,7 @@ static inline float3 parse_color_float3(char const *str) {
   u32 r = hex_to_decimal(str[1]) * 16 + hex_to_decimal(str[2]);
   u32 g = hex_to_decimal(str[3]) * 16 + hex_to_decimal(str[4]);
   u32 b = hex_to_decimal(str[5]) * 16 + hex_to_decimal(str[6]);
-  return (float3){(f32)r / 255.0f, (f32)g / 255.0f, (f32)b / 255.0f};
+  return float3{(f32)r / 255.0f, (f32)g / 255.0f, (f32)b / 255.0f};
 }
 
 u32 parse_color_u32(char const *str) {

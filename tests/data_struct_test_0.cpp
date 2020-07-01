@@ -86,7 +86,7 @@ int main() {
     jto(N) {
       snprintf(buf, sizeof(buf), "key: %lu", arr[j]);
       string_ref key = stref_tmp(buf);
-      ASSERT_ALWAYS(set.remove(key));
+      set.remove(key);
     }
     ASSERT_ALWAYS(set.item_count == 0);
     ASSERT_ALWAYS(set.arr.ptr == NULL);
@@ -119,7 +119,7 @@ int main() {
     jto(N) {
       snprintf(buf, sizeof(buf), "key: %lu", arr[j]);
       string_ref key = stref_tmp(buf);
-      ASSERT_ALWAYS(table.remove(key));
+      table.remove(key);
     }
     ASSERT_ALWAYS(table.set.item_count == 0);
     ASSERT_ALWAYS(table.set.arr.ptr == NULL);
